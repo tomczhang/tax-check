@@ -903,6 +903,41 @@ button {
   flex-wrap: wrap;
 }
 
+.transfer-toolbar {
+  align-items: flex-start;
+}
+
+.transfer-note {
+  max-width: 680px;
+  color: var(--faint);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.transfer-source {
+  max-width: 260px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.empty-state {
+  display: grid;
+  gap: 6px;
+  padding: 28px 18px;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+}
+
+.empty-state b {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.empty-state span {
+  color: var(--faint);
+  font-size: 12px;
+}
+
 .search {
   position: relative;
   flex: 1;

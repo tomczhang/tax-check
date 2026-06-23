@@ -206,6 +206,42 @@ function tradeActivitiesFromAnalysis(analysis) {
   return analysis?.tradeActivities ?? [];
 }
 
+function isTransferActivity(activity) {
+  return ["acquire", "transfer_in", "transfer_out"].includes(activity.side);
+}
+
+function transferSideLabel(activity) {
+  if (activity.side === "transfer_out") return "转出";
+  if (activity.side === "transfer_in") return "转入";
+  if (String(activity.note ?? "").includes("IPO")) return "IPO中签";
+  return "成本带入";
+}
+
+function transferRecordsFromActivities(activities) {
+  return (activities ?? [])
+    .filter(isTransferActivity)
+    .map((activity) => {
+      const market = currencyToMarket(activity.currency, activity.market);
+      const amount = activity.side === "transfer_out" ? null : Math.abs(activity.amount ?? 0);
+      return {
+        id: activity.id,
+        date: activity.date,
+        broker: activity.broker,
+        market,
+        code: activity.symbol,
+        name: activity.securityName,
+        currency: activity.currency,
+        side: transferSideLabel(activity),
+        rawSide: activity.side,
+        quantity: activity.quantity,
+        amount,
+        source: activity.source,
+        note: activity.note,
+      };
+    })
+    .sort((a, b) => a.date.localeCompare(b.date) || a.code.localeCompare(b.code) || a.side.localeCompare(b.side));
+}
+
 function coverageMonths(year, files, tradeActivities, dividends, realizedTrades, openPositions) {
   const activeMonths = new Set();
   const addDate = (date) => {
@@ -1101,6 +1137,68 @@ function DividendsTable({ dividends, fx }) {
   );
 }
 
+function TransferRecordsTable({ records }) {
+  return (
+    <>
+      <div className="toolbar transfer-toolbar">
+        <span className="tcount">
+          共 <b>{records.length}</b> 条转仓 / 成本带入记录
+        </span>
+        <span className="transfer-note">
+          转出不等于卖出；若转出后在其他券商卖出，请继续上传该券商材料，帮助补齐成本和卖出链路。
+        </span>
+      </div>
+      {records.length === 0 ? (
+        <div className="empty-state">
+          <b>暂未识别到转仓记录</b>
+          <span>如果存在跨券商转入、转出或其他成本承接记录，可以继续上传对应券商数据后重新解析。</span>
+        </div>
+      ) : (
+        <div className="tbl-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>日期</th>
+                <th>市场</th>
+                <th>代码</th>
+                <th>名称</th>
+                <th className="c">方向</th>
+                <th>券商</th>
+                <th className="c">币种</th>
+                <th className="r">数量</th>
+                <th className="r">成本 / 参考金额</th>
+                <th>来源 / 提示</th>
+              </tr>
+            </thead>
+            <tbody>
+              {records.map((record) => (
+                <tr key={record.id}>
+                  <td className="num muted">{record.date}</td>
+                  <td>
+                    <Market market={record.market} />
+                  </td>
+                  <td className="code-cell">{record.code}</td>
+                  <td className="stock-nm">{record.name}</td>
+                  <td className="c">
+                    <span className={`side ${record.rawSide === "transfer_out" ? "se" : "bi"}`}>{record.side}</span>
+                  </td>
+                  <td>{record.broker}</td>
+                  <td className="c">
+                    <span className="ccy">{record.currency}</span>
+                  </td>
+                  <td className="r num">{record.quantity.toLocaleString()}</td>
+                  <td className="r num">{record.amount === null ? "-" : `${record.currency} ${fmt(record.amount)}`}</td>
+                  <td className="muted transfer-source">{record.note || record.source}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </>
+  );
+}
+
 function TaxSummary({ summary, fx }) {
   const total = Math.abs(summary.capitalGain) + Math.abs(summary.dividend);
   const gainPct = total ? (Math.abs(summary.capitalGain) / total) * 100 : 0;
@@ -1295,6 +1393,7 @@ function Workbench({
   onManualCostChange,
   onSubmitManualCost,
   dividends,
+  tradeActivities,
   excludedRecords,
   onRestoreExcluded,
   excludedRowKeys,
@@ -1303,9 +1402,11 @@ function Workbench({
   pendingCostFlashToken,
 }) {
   const [tab, setTab] = useState("pnl");
+  const transferRecords = useMemo(() => transferRecordsFromActivities(tradeActivities), [tradeActivities]);
   const tabs = [
     ["pnl", "盈亏明细", rows.length],
     ["div", "分红记录", dividends.length],
+    ["transfer", "转仓记录", transferRecords.length],
     ["tax", "税务汇总", null],
     ["excl", "剔除记录", excludedRecords.length],
     ["fx", "汇率参数", null],
@@ -1355,6 +1456,7 @@ function Workbench({
               />
             ) : null}
             {tab === "div" ? <DividendsTable dividends={dividends} fx={fx} /> : null}
+            {tab === "transfer" ? <TransferRecordsTable records={transferRecords} /> : null}
             {tab === "tax" ? <TaxSummary summary={summary} fx={fx} /> : null}
             {tab === "excl" ? <ExcludedTable records={excludedRecords} onRestore={onRestoreExcluded} /> : null}
             {tab === "fx" ? <FxTable fx={fx} /> : null}
@@ -2592,6 +2694,7 @@ export default function App() {
           onManualCostChange={updateManualCost}
           onSubmitManualCost={submitManualCost}
           dividends={dividends}
+          tradeActivities={tradeActivities}
           excludedRecords={excludedRecords}
           onRestoreExcluded={restoreExcluded}
           excludedRowKeys={excludedRowKeys}
