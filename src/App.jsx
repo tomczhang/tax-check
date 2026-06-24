@@ -849,13 +849,13 @@ function Kpis({ summary }) {
         </div>
         <div className="k-val">{fmt(summary.dividendTaxBase)}</div>
         <div className="k-foot">
-          其中美国分红 {fmt(summary.usDividendTaxBase)}，海外已纳税额 {fmt(summary.dividendWithholdingCredit)}
+          其中美股分红 {fmt(summary.usDividendTaxBase)}，海外已纳税额 {fmt(summary.dividendWithholdingCredit)}
         </div>
       </div>
 
       <div className="kpi kpi-us-dividend">
         <div className="k-top">
-          <span className="k-label">美国分红应纳税所得额</span>
+          <span className="k-label">美股分红应纳税所得额</span>
           <span className="k-ic">
             <CreditCard />
           </span>
@@ -1406,7 +1406,7 @@ function DividendsTable({ dividends, fx }) {
     <>
       <div className="toolbar">
         <span className="tcount">
-          共 <b>{rows.length}</b> 笔派息记录 · 利息、股息、红利所得应纳税所得额 <b>{fmt(totalTaxable)}</b> · 其中美国分红{" "}
+          共 <b>{rows.length}</b> 笔派息记录 · 利息、股息、红利所得应纳税所得额 <b>{fmt(totalTaxable)}</b> · 其中美股分红{" "}
           <b>{fmt(usTaxable)}</b> · 海外已纳税额 <b>{fmt(totalWithholding)}</b>
         </span>
       </div>
@@ -1472,7 +1472,7 @@ function DividendsTable({ dividends, fx }) {
             </tr>
             <tr>
               <td colSpan="6" className="r">
-                其中：美国分红应纳税所得额 / 海外已纳税额
+                其中：美股分红应纳税所得额 / 海外已纳税额
               </td>
               <td className="r num">{fmt(usTaxable)}</td>
               <td className="r num">{fmt(usWithholding)}</td>
@@ -1578,15 +1578,15 @@ function TaxSummary({ summary, fx }) {
         </div>
         <div className="flow-row">
           <div className="lab">
-            <b>其中：美国分红应纳税所得额</b>
+            <b>其中：美股分红应纳税所得额</b>
             <span>美股分红税前金额 × 年末 USD/CNY 汇率</span>
           </div>
           <div className="v">{fmt(summary.usDividendTaxBase)}</div>
         </div>
         <div className="flow-row">
           <div className="lab">
-            <b>美国分红海外已纳税额</b>
-            <span>券商已扣的美国分红预提税，折算人民币后用于抵免</span>
+            <b>美股分红海外已纳税额</b>
+            <span>券商已扣的美股分红预提税，折算人民币后用于抵免</span>
           </div>
           <div className="v neg">-¥{fmt(summary.usDividendWithholdingCredit)}</div>
         </div>
@@ -2075,7 +2075,7 @@ function ReportPage({ year, methodSummaries, files, dividends, onCopyReport, onE
             </div>
           </div>
           <div className="cell">
-            <div className="lab">其中：美国分红应纳税所得额</div>
+            <div className="lab">其中：美股分红应纳税所得额</div>
             <div className="val">
               <span className="cur">¥</span>
               {fmt(best.summary.usDividendTaxBase)}
@@ -2138,7 +2138,7 @@ function ReportPage({ year, methodSummaries, files, dividends, onCopyReport, onE
             </tr>
             <tr>
               <td className="rowlab">
-                <b>其中：美国分红应纳税所得额</b>
+                <b>其中：美股分红应纳税所得额</b>
                 <br />
                 美股分红税前金额 × 年末 USD/CNY 汇率
               </td>
@@ -2156,7 +2156,7 @@ function ReportPage({ year, methodSummaries, files, dividends, onCopyReport, onE
             </tr>
             <tr>
               <td className="rowlab">
-                <b>其中：美国分红海外已纳税额</b>
+                <b>其中：美股分红海外已纳税额</b>
                 <br />
                 美股分红已扣税额 × 年末 USD/CNY 汇率
               </td>
@@ -2291,15 +2291,15 @@ function ReportPage({ year, methodSummaries, files, dividends, onCopyReport, onE
             <div className="foreign-credit-block">
               <div className="foreign-credit-summary">
                 <div>
-                  <span>美国分红应纳税所得额</span>
+                  <span>美股分红应纳税所得额</span>
                   <b>¥{fmt(usDividendTaxBaseRmb)}</b>
                 </div>
                 <div>
-                  <span>美国分红海外已纳税额</span>
+                  <span>美股分红海外已纳税额</span>
                   <b>¥{fmt(usDividendWithholdingRmb)}</b>
                 </div>
               </div>
-              <div className="foreign-credit-note">以下截图为券商 PDF 中美国分红及扣税记录的原文位置，供申报境外所得抵扣时核对。</div>
+              <div className="foreign-credit-note">以下截图为券商 PDF 中美股分红及扣税记录的原文位置，供申报境外所得抵扣时核对。</div>
               {usDividendEvidenceRows.length ? (
                 <div className="report-evidence-list">
                   {usDividendEvidenceRows.map((dividend) => (
@@ -2309,7 +2309,7 @@ function ReportPage({ year, methodSummaries, files, dividends, onCopyReport, onE
                         {dividend.evidence?.page ? ` · 第 ${dividend.evidence.page} 页` : ""} · 应纳税所得额 RMB {fmt(dividend.taxableRmb)} · 海外已纳税额 RMB {fmt(dividend.withholdingRmb)}
                       </figcaption>
                       {dividend.evidence?.imageDataUrl ? (
-                        <img src={dividend.evidence.imageDataUrl} alt={`${dividend.symbol} 美国分红 PDF 原文截图`} />
+                        <img src={dividend.evidence.imageDataUrl} alt={`${dividend.symbol} 美股分红 PDF 原文截图`} />
                       ) : (
                         <pre>{dividend.evidence?.text}</pre>
                       )}
@@ -3039,11 +3039,11 @@ export default function App() {
       `财产转让所得实际盈亏：RMB ${cnSigned(best.summary.capitalGain)}`,
       `财产转让所得应纳税所得额：¥${fmt(best.summary.capitalTaxBase)}`,
       `利息、股息、红利所得应纳税所得额：¥${fmt(best.summary.dividendTaxBase)}`,
-      `其中美国分红应纳税所得额：¥${fmt(best.summary.usDividendTaxBase)}`,
+      `其中美股分红应纳税所得额：¥${fmt(best.summary.usDividendTaxBase)}`,
       "适用税率：20%",
       `分类税额合计（抵免前）：¥${fmt((best.summary.capitalTaxBase + best.summary.dividendTaxBase) * TAX_RATE)}`,
       `海外已纳税额：¥${fmt(best.summary.dividendWithholdingCredit)}`,
-      `其中美国分红海外已纳税额：¥${fmt(best.summary.usDividendWithholdingCredit)}`,
+      `其中美股分红海外已纳税额：¥${fmt(best.summary.usDividendWithholdingCredit)}`,
       `预估应补税额：¥${fmt(best.summary.tax)}`,
       "说明：财产转让所得亏损不抵减利息、股息、红利所得应纳税所得额。",
       isTie ? "自然年 FIFO 与自然年 ACB 税额一致" : `对比${other.label}应缴 ¥${fmt(other.summary.tax)}，可节省 ¥${fmt(saving)}`,
