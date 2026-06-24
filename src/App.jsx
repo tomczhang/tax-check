@@ -1068,6 +1068,7 @@ function PnlTable({
   onClearCostCorrection,
   analysisStatus,
   fx,
+  tradeActivities = [],
   pendingCostFlashToken,
 }) {
   const [query, setQuery] = useState("");
@@ -1088,6 +1089,8 @@ function PnlTable({
     const okMarket = market === "all" || row.market === market;
     return okQuery && okMarket;
   });
+  const buyActivityCount = tradeActivities.filter((activity) => activity.side === "buy" || activity.side === "acquire" || activity.side === "transfer_in").length;
+  const sellActivityCount = tradeActivities.filter((activity) => activity.side === "sell").length;
 
   useEffect(() => {
     if (!openRow) {
@@ -1138,7 +1141,32 @@ function PnlTable({
             </tr>
           </thead>
           <tbody>
-            {filteredRows.map((row, idx) => {
+            {filteredRows.length === 0 ? (
+              <tr>
+                <td colSpan="7">
+                  <div className="empty-state pnl-empty-state">
+                    {rows.length === 0 && tradeActivities.length > 0 ? (
+                      <>
+                        <b>当前材料没有形成已实现盈亏</b>
+                        <span>
+                          已识别 {tradeActivities.length} 笔成交流水，其中买入 / 转入 {buyActivityCount} 笔、卖出 {sellActivityCount} 笔。盈亏明细只展示卖出后形成的已实现盈亏；买入流水会作为后续月份卖出时的成本材料。
+                        </span>
+                      </>
+                    ) : rows.length === 0 ? (
+                      <>
+                        <b>暂未识别到盈亏明细</b>
+                        <span>请确认已上传目标纳税年度包含卖出记录的券商材料；只有买入或持仓估值不会形成已实现盈亏。</span>
+                      </>
+                    ) : (
+                      <>
+                        <b>没有符合筛选条件的标的</b>
+                        <span>可以清空搜索关键词，或切换市场筛选后再查看。</span>
+                      </>
+                    )}
+                  </div>
+                </td>
+              </tr>
+            ) : filteredRows.map((row, idx) => {
               const isOpen = openRow === row.key;
               return (
                 <React.Fragment key={row.key}>
@@ -1858,6 +1886,7 @@ function Workbench({
                 onClearCostCorrection={onClearCostCorrection}
                 analysisStatus={analysisStatus}
                 fx={fx}
+                tradeActivities={tradeActivities}
                 pendingCostFlashToken={pendingCostFlashToken}
               />
             ) : null}

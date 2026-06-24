@@ -138,7 +138,10 @@ export async function analyzeUploadedFiles(options: {
     if (!options.password?.trim()) {
       throw new ParserValidationError("检测到长桥 PDF 月结单，请先填写长桥 PDF 密码（手机号后四位 + 身份证后四位）后再解析。");
     }
-    const parsed = await parseLongbridgePdfs(longbridgeFiles, options.password);
+    const parsed = await parseLongbridgePdfs(longbridgeFiles, options.password, {
+      targetYear: options.taxYear,
+      manualCosts: options.manualCosts ?? [],
+    });
     const blocking = parsed.issues.find((issue) => issue.severity === "blocking");
     if (blocking) {
       throw new ParserValidationError(`${blocking.title}：${blocking.detail}`, blocking.source);

@@ -209,11 +209,6 @@ button {
   white-space: nowrap;
 }
 
-.btn:hover:not(:disabled) {
-  background: var(--surface-2);
-  border-color: var(--faint);
-}
-
 .btn svg {
   width: 15px;
   height: 15px;
@@ -225,10 +220,6 @@ button {
   color: #fff;
   border-color: transparent;
   box-shadow: 0 1px 2px oklch(48% 0.125 256 / 0.4);
-}
-
-.btn.primary:hover:not(:disabled) {
-  filter: brightness(1.06);
 }
 
 .btn.primary svg {
@@ -1092,6 +1083,12 @@ button {
 .empty-state span {
   color: var(--faint);
   font-size: 12px;
+}
+
+.pnl-empty-state {
+  margin: 0;
+  border-bottom: 0;
+  text-align: left;
 }
 
 .search {

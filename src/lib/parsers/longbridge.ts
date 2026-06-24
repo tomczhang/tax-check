@@ -1,6 +1,7 @@
 import { emptyParsedInput } from "@/lib/tax/calculator";
 import pdfWorkerUrl from "pdfjs-dist/legacy/build/pdf.worker.mjs?url";
 import type {
+  CostBasisRequest,
   Currency,
   DividendIncome,
   OpenPosition,
@@ -110,6 +111,41 @@ interface LongbridgeRawData {
   moves: PositionMoveRecord[];
   positions: PortfolioRecord[];
   issues: ReviewIssue[];
+}
+
+export interface ManualCostInput {
+  id: string;
+  costBasis: number;
+}
+
+interface MissingCostAggregate {
+  id: string;
+  broker: string;
+  sellDate: string;
+  market: string;
+  currency: Currency;
+  symbol: string;
+  securityName: string;
+  quantity: number;
+  proceeds: number;
+  trackedQuantity: number;
+  source: string;
+  note: string;
+  sales: MissingCostSale[];
+}
+
+interface MissingCostSale {
+  date: string;
+  time: string;
+  sequence: number;
+  market: string;
+  currency: Currency;
+  symbol: string;
+  securityName: string;
+  quantity: number;
+  proceeds: number;
+  source: string;
+  note: string;
 }
 
 interface PositionState {
@@ -498,7 +534,7 @@ function parseLongbridgeLines(sourcePdf: string, lines: TextLine[]): LongbridgeR
       activeTable = "portfolio";
       continue;
     }
-    if (text.includes("交易日期") && text.includes("编号") && text.includes("变动金额")) {
+    if (text.includes("股票交易明细") || (text.includes("交易日期") && text.includes("编号") && text.includes("变动金额"))) {
       activeTable = "stock_trade";
       continue;
     }
@@ -712,6 +748,16 @@ function stateAvgCost(state: PositionState) {
   return Math.abs(state.quantity) < 1e-9 ? 0 : state.costBasis / state.quantity;
 }
 
+function manualCostMap(manualCosts: ManualCostInput[] = []) {
+  const costs = new Map<string, number>();
+  for (const item of manualCosts) {
+    if (!item.id) continue;
+    if (!Number.isFinite(item.costBasis) || item.costBasis < 0) continue;
+    costs.set(item.id, item.costBasis);
+  }
+  return costs;
+}
+
 function activityAmount(event: EventRecord) {
   if ("cash" in event) return event.kind === "buy" ? -event.cash : event.cash;
   if (event.kind === "transfer_out") return 0;
@@ -740,12 +786,19 @@ function buildTradeActivities(events: EventRecord[]): TradeActivity[] {
   }));
 }
 
-function buildRealizedTrades(raw: LongbridgeRawData): {
+function buildRealizedTrades(
+  raw: LongbridgeRawData,
+  targetYear?: number,
+  manualCosts: ManualCostInput[] = [],
+): {
   trades: RealizedTrade[];
   issues: ReviewIssue[];
   activities: TradeActivity[];
+  costBasisRequests: CostBasisRequest[];
 } {
   const issues: ReviewIssue[] = [];
+  const missingCost = new Map<string, MissingCostAggregate>();
+  const manualCostsById = manualCostMap(manualCosts);
   const allottedCodes = new Set(
     raw.moves.filter((move) => canonicalText(move.moveType).includes("中签")).map((move) => normalizeCode(move.code)),
   );
@@ -893,13 +946,44 @@ function buildRealizedTrades(raw: LongbridgeRawData): {
       state.costBasis += -event.cash;
     } else if (event.kind === "sell") {
       if (state.quantity + 1e-7 < event.quantity) {
-        issues.push({
-          id: `${event.date}-${event.code}-short-position`,
-          severity: "warning",
-          title: `${displayCode(event.code)} 卖出数量超过已追踪持仓`,
-          detail: `卖出 ${event.quantity}，但当前只追踪到 ${state.quantity}。需要补充更早的买入或转入记录。`,
-          source: event.source,
-        });
+        if (targetYear === undefined || event.date.startsWith(String(targetYear))) {
+          const requestId = `longbridge-cost-${targetYear ?? "unknown"}-${event.currency}-${displayCode(event.code)}`;
+          const existing = missingCost.get(key);
+          missingCost.set(key, {
+            id: requestId,
+            broker: "长桥",
+            sellDate: existing?.sellDate ?? event.date,
+            market: event.market,
+            currency: event.currency,
+            symbol: displayCode(event.code),
+            securityName: event.name,
+            quantity: (existing?.quantity ?? 0) + event.quantity,
+            proceeds: (existing?.proceeds ?? 0) + event.cash,
+            trackedQuantity: Math.max(existing?.trackedQuantity ?? 0, state.quantity),
+            source: existing?.source ?? event.source,
+            note: "手动补录总成本后计入资本利得",
+            sales: [
+              ...(existing?.sales ?? []),
+              {
+                date: event.date,
+                time: event.time,
+                sequence: event.sequence,
+                market: event.market,
+                currency: event.currency,
+                symbol: displayCode(event.code),
+                securityName: event.name,
+                quantity: event.quantity,
+                proceeds: event.cash,
+                source: event.source,
+                note: event.note,
+              },
+            ],
+          });
+        }
+        state.quantity = 0;
+        state.costBasis = 0;
+        states.set(key, state);
+        continue;
       }
       const costBasis = event.quantity * stateAvgCost(state);
       const gainLoss = event.cash - costBasis;
@@ -938,7 +1022,60 @@ function buildRealizedTrades(raw: LongbridgeRawData): {
     states.set(key, state);
   }
 
-  return { trades: realizedTrades, issues, activities: buildTradeActivities(events) };
+  const costBasisRequests: CostBasisRequest[] = [];
+
+  for (const item of missingCost.values()) {
+    const manualCostBasis = manualCostsById.get(item.id);
+    if (manualCostBasis !== undefined) {
+      let allocatedCost = 0;
+      item.sales.forEach((sale, index) => {
+        const costBasis =
+          index === item.sales.length - 1
+            ? manualCostBasis - allocatedCost
+            : (manualCostBasis * sale.quantity) / item.quantity;
+        allocatedCost += costBasis;
+        realizedTrades.push({
+          id: `${item.id}-${sale.date}-${sale.sequence}-manual`,
+          broker: item.broker,
+          sellDate: sale.date,
+          market: sale.market,
+          currency: sale.currency,
+          symbol: sale.symbol,
+          securityName: sale.securityName,
+          quantity: sale.quantity,
+          proceeds: sale.proceeds,
+          costBasis,
+          gainLoss: sale.proceeds - costBasis,
+          source: sale.source,
+          note: `用户手动补录总成本：${manualCostBasis}；按卖出数量分摊`,
+        });
+      });
+      continue;
+    }
+
+    costBasisRequests.push({
+      id: item.id,
+      broker: item.broker,
+      sellDate: item.sellDate,
+      market: item.market,
+      currency: item.currency,
+      symbol: item.symbol,
+      securityName: item.securityName,
+      quantity: item.quantity,
+      proceeds: item.proceeds,
+      source: item.source,
+      note: item.note,
+    });
+    issues.push({
+      id: `longbridge-${targetYear ?? "unknown"}-${item.symbol}-cost-gap`,
+      severity: "warning",
+      title: `${item.symbol} 历史成本缺失`,
+      detail: `目标年度卖出 ${item.quantity} 股，但上传文件中最多只追踪到 ${item.trackedQuantity} 股成本；相关卖出未计入资本利得，需要补充更早年度记录或手动在 **盈亏明细-待补成本** 中添加成本。`,
+      source: item.source,
+    });
+  }
+
+  return { trades: realizedTrades, issues, activities: buildTradeActivities(events), costBasisRequests };
 }
 
 function buildOpenPositions(raw: LongbridgeRawData): OpenPosition[] {
@@ -972,6 +1109,7 @@ function buildOpenPositions(raw: LongbridgeRawData): OpenPosition[] {
 export async function parseLongbridgePdfs(
   files: LongbridgeFileInput[],
   password?: string,
+  options: { targetYear?: number; manualCosts?: ManualCostInput[] } = {},
 ): Promise<ParsedInput> {
   const parsed = emptyParsedInput();
   const raw: LongbridgeRawData = {
@@ -1003,12 +1141,13 @@ export async function parseLongbridgePdfs(
     }
   }
 
-  const realized = buildRealizedTrades(raw);
+  const realized = buildRealizedTrades(raw, options.targetYear, options.manualCosts ?? []);
   parsed.realizedTrades.push(...realized.trades);
   parsed.tradeActivities.push(...realized.activities);
   parsed.dividends.push(...buildDividends(raw.cashFlows));
   parsed.openPositions.push(...buildOpenPositions(raw));
   parsed.issues.push(...raw.issues, ...realized.issues);
+  parsed.costBasisRequests.push(...realized.costBasisRequests);
 
   if (raw.trades.length === 0 && raw.cashFlows.length === 0 && raw.moves.length === 0 && raw.positions.length === 0 && files.length > 0) {
     parsed.issues.push({
