@@ -59,6 +59,7 @@ interface StockTradeRecord {
   tradeAmount: number;
   cashChange: number;
   sequence: number;
+  codeResolution: "explicit" | "known_alias" | "name_fallback";
 }
 
 interface CashFlowRecord {
@@ -214,6 +215,40 @@ const ORDER_TIME_OVERRIDE: Record<string, string> = {
   OS20251230173008: "14:14:02",
 };
 
+const KNOWN_SECURITY_ALIASES: Record<string, { code: string; name: string; market?: string; currency?: Currency }> = {
+  "advanced micro devices": { code: "AMD", name: "AMD", market: "美国市场", currency: "USD" },
+  amd: { code: "AMD", name: "AMD", market: "美国市场", currency: "USD" },
+  "archer aviation": { code: "ACHR", name: "Archer Aviation", market: "美国市场", currency: "USD" },
+  "blade air mobility": { code: "BLDE", name: "Blade Air Mobility", market: "美国市场", currency: "USD" },
+  celsius: { code: "CELH", name: "Celsius", market: "美国市场", currency: "USD" },
+  cleanspark: { code: "CLSK", name: "CleanSpark", market: "美国市场", currency: "USD" },
+  "direxion daily msft": { code: "MSFU", name: "Direxion Daily MSFT Bull 2X Shares", market: "美国市场", currency: "USD" },
+  "direxion daily msft bull 2x shares": {
+    code: "MSFU",
+    name: "Direxion Daily MSFT Bull 2X Shares",
+    market: "美国市场",
+    currency: "USD",
+  },
+  "direxion daily tsla": { code: "TSLL", name: "Direxion Daily TSLA Bull 2X Shares", market: "美国市场", currency: "USD" },
+  "direxion daily tsla bull 2x shares": {
+    code: "TSLL",
+    name: "Direxion Daily TSLA Bull 2X Shares",
+    market: "美国市场",
+    currency: "USD",
+  },
+  "kulr tech": { code: "KULR", name: "KULR Tech", market: "美国市场", currency: "USD" },
+  microsoft: { code: "MSFT", name: "Microsoft", market: "美国市场", currency: "USD" },
+  "micron tech": { code: "MU", name: "Micron Tech", market: "美国市场", currency: "USD" },
+  "pro ultr cvix shrt": { code: "UVXY", name: "ProShares Ultra VIX Short-Term Futures ETF", market: "美国市场", currency: "USD" },
+  "pro ultr vix shrt": { code: "UVXY", name: "ProShares Ultra VIX Short-Term Futures ETF", market: "美国市场", currency: "USD" },
+  "red cat": { code: "RCAT", name: "Red Cat", market: "美国市场", currency: "USD" },
+  redwire: { code: "RDW", name: "Redwire", market: "美国市场", currency: "USD" },
+  satixfy: { code: "SATX", name: "SatixFy Communications", market: "美国市场", currency: "USD" },
+  "satixfy communications": { code: "SATX", name: "SatixFy Communications", market: "美国市场", currency: "USD" },
+  taiwan: { code: "TSM", name: "Taiwan Semiconductor", market: "美国市场", currency: "USD" },
+  "taiwan semiconductor": { code: "TSM", name: "Taiwan Semiconductor", market: "美国市场", currency: "USD" },
+};
+
 function clean(value: string) {
   return value.replace(/\s+/g, " ").trim();
 }
@@ -222,6 +257,53 @@ function canonicalText(value: string) {
   return value
     .normalize("NFKC")
     .replaceAll("⻓", "长")
+    .replaceAll("長", "长")
+    .replaceAll("橋", "桥")
+    .replaceAll("證", "证")
+    .replaceAll("綜", "综")
+    .replaceAll("賬", "账")
+    .replaceAll("帳", "账")
+    .replaceAll("戶", "户")
+    .replaceAll("⼾", "户")
+    .replaceAll("結", "结")
+    .replaceAll("單", "单")
+    .replaceAll("總", "总")
+    .replaceAll("覽", "览")
+    .replaceAll("資", "资")
+    .replaceAll("額", "额")
+    .replaceAll("詳", "详")
+    .replaceAll("項", "项")
+    .replaceAll("變", "变")
+    .replaceAll("數", "数")
+    .replaceAll("價", "价")
+    .replaceAll("倉", "仓")
+    .replaceAll("虧", "亏")
+    .replaceAll("維", "维")
+    .replaceAll("貨", "货")
+    .replaceAll("錢", "钱")
+    .replaceAll("編", "编")
+    .replaceAll("號", "号")
+    .replaceAll("買", "买")
+    .replaceAll("賣", "卖")
+    .replaceAll("發", "发")
+    .replaceAll("類", "类")
+    .replaceAll("備", "备")
+    .replaceAll("註", "注")
+    .replaceAll("幣", "币")
+    .replaceAll("種", "种")
+    .replaceAll("場", "场")
+    .replaceAll("國", "国")
+    .replaceAll("紅", "红")
+    .replaceAll("動", "动")
+    .replaceAll("費", "费")
+    .replaceAll("稅", "税")
+    .replaceAll("認", "认")
+    .replaceAll("購", "购")
+    .replaceAll("贖", "赎")
+    .replaceAll("轉", "转")
+    .replaceAll("簽", "签")
+    .replaceAll("籤", "签")
+    .replaceAll("餘", "余")
     .replaceAll("⽣", "生")
     .replaceAll("⽇", "日")
     .replaceAll("⾦", "金")
@@ -238,6 +320,9 @@ function isLongbridgeMonthlyStatement(text: string) {
   return (
     text.includes("综合账户月结单") ||
     text.includes("长桥证券") ||
+    lower.includes("longbridge") ||
+    lower.includes("long bridge") ||
+    lower.includes("lbhk") ||
     lower.includes("longbridge securities") ||
     lower.includes("long bridge securities") ||
     lower.includes("longbridge hk") ||
@@ -265,16 +350,60 @@ function displayCode(value: string) {
 }
 
 function mapCurrency(value: string): Currency {
-  if (value.includes("美元") || value.toUpperCase().includes("USD")) return "USD";
-  if (value.includes("人民币") || value.toUpperCase().includes("CNY")) return "CNY";
+  const text = canonicalText(value).toUpperCase();
+  if (text.includes("美元") || text.includes("USD")) return "USD";
+  if (text.includes("人民币") || text.includes("CNY")) return "CNY";
   return "HKD";
 }
 
-function splitSecurity(item: string) {
-  const [code = "", ...nameParts] = clean(item).split(" ");
+function securityAliasKey(value: string) {
+  return canonicalText(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+function isSecurityCodeCandidate(value: string) {
+  const text = value.trim();
+  return /^\d{3,6}$/.test(text) || /^[A-Z]{1,6}$/.test(text) || /^HK\d{6,}$/i.test(text);
+}
+
+function fallbackSecurityCode(item: string) {
+  const normalized = securityAliasKey(item).toUpperCase().replace(/\s+/g, "-");
+  return normalized ? `UNRESOLVED-${normalized.slice(0, 32)}` : "UNRESOLVED-SECURITY";
+}
+
+function splitSecurity(item: string): {
+  code: string;
+  name: string;
+  codeResolution: "explicit" | "known_alias" | "name_fallback";
+  market?: string;
+  currency?: Currency;
+} {
+  const text = clean(item);
+  const alias = KNOWN_SECURITY_ALIASES[securityAliasKey(text)];
+  if (alias) {
+    return { ...alias, codeResolution: "known_alias" };
+  }
+
+  const [code = "", ...nameParts] = text.split(" ");
+  if (isSecurityCodeCandidate(code)) {
+    const codeAlias = KNOWN_SECURITY_ALIASES[securityAliasKey(code)];
+    if (nameParts.length === 0 && codeAlias) {
+      return { ...codeAlias, codeResolution: "known_alias" };
+    }
+    return {
+      code: normalizeCode(code),
+      name: nameParts.join(" ") || codeAlias?.name || displayCode(code),
+      codeResolution: "explicit",
+    };
+  }
+
   return {
-    code: normalizeCode(code),
-    name: nameParts.join(" "),
+    code: fallbackSecurityCode(text),
+    name: text,
+    codeResolution: "name_fallback",
   };
 }
 
@@ -287,9 +416,26 @@ function lineCell(line: TextLine, minX: number, maxX: number) {
   );
 }
 
+function canonicalLineCell(line: TextLine, minX: number, maxX: number) {
+  return canonicalText(lineCell(line, minX, maxX));
+}
+
 function hasDateAtStart(line: TextLine) {
   const first = line.tokens[0]?.text;
   return Boolean(first && DATE_RE.test(first));
+}
+
+function inferTradeMarket(item: string, security: ReturnType<typeof splitSecurity>) {
+  if (security.market && security.currency) {
+    return { market: security.market, currency: security.currency };
+  }
+  if (/^\d{3,6}$/.test(security.code) || /^HK\d{6,}$/i.test(security.code)) {
+    return { market: "香港市场", currency: "HKD" as const };
+  }
+  if (/[A-Za-z]/.test(item) || /^[A-Z]{1,6}$/.test(security.code)) {
+    return { market: "美国市场", currency: "USD" as const };
+  }
+  return { market: "香港市场", currency: "HKD" as const };
 }
 
 async function extractPdfLines(fileName: string, data: ArrayBuffer, password?: string) {
@@ -375,7 +521,7 @@ function parseStockTradeLine(
   const tradeDate = lineCell(line, 0, 76);
   const settleDate = lineCell(line, 76, 137);
   const orderId = lineCell(line, 137, 220);
-  const side = lineCell(line, 220, 252);
+  const side = canonicalLineCell(line, 220, 252);
   const item = lineCell(line, 252, 358);
   const quantity = lineCell(line, 358, 402);
   const avgPrice = lineCell(line, 402, 455);
@@ -389,12 +535,13 @@ function parseStockTradeLine(
 
   const security = splitSecurity(item);
   if (!security.code || !quantity || !avgPrice || !tradeAmount || !cashChange) return null;
+  const inferredMarket = inferTradeMarket(item, security);
 
   return {
     sourcePdf,
     page: line.page,
-    market,
-    currency,
+    market: market || inferredMarket.market,
+    currency: market ? currency : inferredMarket.currency,
     tradeDate,
     settleDate,
     orderId,
@@ -406,6 +553,7 @@ function parseStockTradeLine(
     tradeAmount: parseNumber(tradeAmount),
     cashChange: parseNumber(cashChange),
     sequence,
+    codeResolution: security.codeResolution,
   };
 }
 
@@ -489,7 +637,8 @@ function parsePortfolioLine(
   currency: Currency,
 ): PortfolioRecord | null {
   const item = lineCell(line, 0, 120);
-  if (!item || item.startsWith("汇总") || item.startsWith("股票") || item.startsWith("余额通")) {
+  const canonicalItem = canonicalText(item);
+  if (!item || canonicalItem.startsWith("汇总") || canonicalItem.startsWith("股票") || canonicalItem.startsWith("余额通")) {
     return null;
   }
 
@@ -506,13 +655,15 @@ function parsePortfolioLine(
   }
 
   const security = splitSecurity(item);
+  if (!market && security.codeResolution === "name_fallback") return null;
   if (!security.code) return null;
+  const inferredMarket = inferTradeMarket(item, security);
 
   return {
     sourcePdf,
     page: line.page,
-    market,
-    currency,
+    market: market || inferredMarket.market,
+    currency: market ? currency : inferredMarket.currency,
     code: security.code,
     name: security.name,
     beginQty: parseNumber(beginQty),
@@ -543,6 +694,7 @@ function parseLongbridgeLines(sourcePdf: string, lines: TextLine[]): LongbridgeR
   let portfolioMarket = "";
   let portfolioCurrency: Currency = "HKD";
   let sequence = 0;
+  const fallbackSecurityNames = new Map<string, string>();
 
   for (const line of lines) {
     const text = canonicalText(line.text);
@@ -590,13 +742,18 @@ function parseLongbridgeLines(sourcePdf: string, lines: TextLine[]): LongbridgeR
       continue;
     }
 
-    if (activeTable === "stock_trade") {
+    if (activeTable === "stock_trade" || /\bOS\d+/.test(text)) {
       const trade = parseStockTradeLine(sourcePdf, line, tradeMarket, tradeCurrency, sequence);
       if (trade) {
+        activeTable = "stock_trade";
         raw.trades.push(trade);
+        if (trade.codeResolution === "name_fallback") {
+          fallbackSecurityNames.set(trade.code, trade.name);
+        }
         sequence += 1;
+        continue;
       }
-      continue;
+      if (activeTable === "stock_trade") continue;
     }
 
     if (activeTable === "cash_flow") {
@@ -611,10 +768,28 @@ function parseLongbridgeLines(sourcePdf: string, lines: TextLine[]): LongbridgeR
       continue;
     }
 
+    if (activeTable === "none") {
+      const position = parsePortfolioLine(sourcePdf, line, portfolioMarket, portfolioCurrency);
+      if (position) {
+        raw.positions.push(position);
+        continue;
+      }
+    }
+
     if (activeTable === "portfolio") {
       const position = parsePortfolioLine(sourcePdf, line, portfolioMarket, portfolioCurrency);
       if (position) raw.positions.push(position);
     }
+  }
+
+  for (const [code, name] of fallbackSecurityNames) {
+    raw.issues.push({
+      id: `${sourcePdf}-${code}-symbol-fallback`,
+      severity: "warning",
+      title: `${name} 股票代码需复核`,
+      detail: `该月结单的文本层缺少股票代码，系统已用 ${displayCode(code)} 作为临时代码归集交易。请在计算结果中核对该标的，必要时补充代码映射。`,
+      source: sourcePdf,
+    });
   }
 
   return raw;

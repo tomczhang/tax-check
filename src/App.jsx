@@ -507,7 +507,18 @@ const TAX_FORM_GUIDES = {
 
 const FUTU_SHEET_MARKERS = ["账户信息", "证券-持仓总览", "证券-交易流水", "证券-资产进出", "证券-资金进出"];
 const FUTU_TEXT_MARKERS = ["富途", "futu", "moomoo", "牛牛号", "账户号码"];
-const LONGBRIDGE_TEXT_MARKERS = ["长桥", "longbridge", "long bridge", "long bridge hk", "long bridge securities"];
+const LONGBRIDGE_TEXT_MARKERS = [
+  "长桥",
+  "長橋",
+  "⻑橋",
+  "综合账户月结单",
+  "綜合賬戶月結單",
+  "longbridge",
+  "long bridge",
+  "long bridge hk",
+  "long bridge securities",
+  "lbhk",
+];
 const TIGER_TEXT_MARKERS = ["Tiger Brokers", "Tiger Brokers (NZ)", "老虎", "活动报表", "Tax Form Record", "Key Tax Figures"];
 
 function brokerConfidenceLabel(confidence) {
