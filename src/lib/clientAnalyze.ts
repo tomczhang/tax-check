@@ -6,10 +6,11 @@ import {
 import { taxConfigForYear } from "@/lib/tax/config";
 import { parseFutuWorkbooks, type ManualCostInput } from "@/lib/parsers/futu";
 import { parseLongbridgePdfs } from "@/lib/parsers/longbridge";
+import { parseTigerPdfs } from "@/lib/parsers/tiger";
 import { ParserValidationError } from "@/lib/parsers/common";
 import type { CostBasisCorrection, CostBasisMethod, ParsedInput, TaxAnalysis } from "@/lib/tax/types";
 
-export type BrokerId = "futu" | "longbridge";
+export type BrokerId = "futu" | "longbridge" | "tiger";
 
 export interface UploadFileEntry {
   id: string;
@@ -30,6 +31,13 @@ function filterByTaxYear(input: ParsedInput, taxYear: number): ParsedInput {
     ...input,
     dividends: input.dividends.filter((dividend) => dividend.date.startsWith(prefix)),
     openPositions: input.openPositions,
+    taxStatementSummaries: input.taxStatementSummaries.filter((summary) => {
+      const startYear = Number(String(summary.periodStart ?? "").slice(0, 4));
+      const endYear = Number(String(summary.periodEnd ?? "").slice(0, 4));
+      if (!Number.isFinite(startYear) && !Number.isFinite(endYear)) return true;
+      if (Number.isFinite(startYear) && Number.isFinite(endYear)) return startYear <= taxYear && endYear >= taxYear;
+      return startYear === taxYear || endYear === taxYear;
+    }),
   };
 }
 
@@ -40,6 +48,7 @@ function issueDateYears(input: ParsedInput) {
     ...input.dividends.map((dividend) => dividend.date),
     ...input.openPositions.map((position) => position.asOf),
     ...input.costBasisRequests.map((request) => request.sellDate),
+    ...input.taxStatementSummaries.flatMap((summary) => [summary.periodStart, summary.periodEnd]),
   ]
     .map((date) => Number(String(date ?? "").slice(0, 4)))
     .filter((year) => Number.isFinite(year) && year >= 2000);
@@ -112,6 +121,7 @@ export async function analyzeUploadedFiles(options: {
 
   const futuFiles: Array<{ name: string; data: ArrayBuffer }> = [];
   const longbridgeFiles: Array<{ name: string; data: ArrayBuffer }> = [];
+  const tigerFiles: Array<{ name: string; data: ArrayBuffer }> = [];
 
   for (const entry of realFiles) {
     const file = entry.file;
@@ -122,11 +132,16 @@ export async function analyzeUploadedFiles(options: {
         throw new ParserValidationError(`${file.name} 被标记为富途，但富途解析器只接受 Excel 年度报表。`, file.name);
       }
       futuFiles.push({ name: file.name, data: await file.arrayBuffer() });
-    } else {
+    } else if (entry.broker === "longbridge") {
       if (!lower.endsWith(".pdf")) {
         throw new ParserValidationError(`${file.name} 被标记为长桥，但长桥解析器只接受 PDF 月结单。`, file.name);
       }
       longbridgeFiles.push({ name: file.name, data: await file.arrayBuffer() });
+    } else {
+      if (!lower.endsWith(".pdf")) {
+        throw new ParserValidationError(`${file.name} 被标记为老虎，但老虎解析器只接受 PDF 税表或活动报表。`, file.name);
+      }
+      tigerFiles.push({ name: file.name, data: await file.arrayBuffer() });
     }
   }
 
@@ -142,6 +157,14 @@ export async function analyzeUploadedFiles(options: {
       targetYear: options.taxYear,
       manualCosts: options.manualCosts ?? [],
     });
+    const blocking = parsed.issues.find((issue) => issue.severity === "blocking");
+    if (blocking) {
+      throw new ParserValidationError(`${blocking.title}：${blocking.detail}`, blocking.source);
+    }
+    inputs.push(parsed);
+  }
+  if (tigerFiles.length > 0) {
+    const parsed = await parseTigerPdfs(tigerFiles);
     const blocking = parsed.issues.find((issue) => issue.severity === "blocking");
     if (blocking) {
       throw new ParserValidationError(`${blocking.title}：${blocking.detail}`, blocking.source);

@@ -7,9 +7,11 @@ import type {
   CurrencySummary,
   ParsedInput,
   RealizedTrade,
+  ReviewIssue,
   SymbolSummary,
   TaxAnalysis,
   TaxConfig,
+  TaxStatementSummary,
   TaxScenarioId,
   TaxScenarioSummary,
   TaxYearMode,
@@ -32,6 +34,75 @@ function statusFor(value: number): "gain" | "loss" | "flat" {
 
 function roundMoney(value: number) {
   return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+function inSummaryPeriod(summary: TaxStatementSummary, window: TaxWindow) {
+  const start = summary.periodStart;
+  const end = summary.periodEnd;
+  if (!start && !end) return true;
+  if (start && start > window.end) return false;
+  if (end && end < window.start) return false;
+  return true;
+}
+
+function hasDetailedBrokerData(input: ParsedInput, broker: string) {
+  return (
+    input.tradeActivities.some((activity) => activity.broker === broker) ||
+    input.realizedTrades.some((trade) => trade.broker === broker)
+  );
+}
+
+function activeTaxStatementSummaries(input: ParsedInput, window?: TaxWindow) {
+  return (input.taxStatementSummaries ?? []).filter((summary) => {
+    if (window && !inSummaryPeriod(summary, window)) return false;
+    return !hasDetailedBrokerData(input, summary.broker);
+  });
+}
+
+function taxStatementReviewIssues(input: ParsedInput, trades: RealizedTrade[]): ReviewIssue[] {
+  const summaries = input.taxStatementSummaries ?? [];
+  if (summaries.length === 0) return [];
+
+  return summaries
+    .filter((summary) => hasDetailedBrokerData(input, summary.broker))
+    .map((summary) => {
+      const brokerTrades = trades.filter((trade) => trade.broker === summary.broker);
+      const brokerGainLoss = brokerTrades.reduce((sum, trade) => sum + trade.gainLoss, 0);
+      const diff = brokerGainLoss - summary.realizedGainLoss;
+      const diffText =
+        brokerTrades.length > 0
+          ? `当前明细计算已实现盈亏 ${summary.currency} ${roundMoney(brokerGainLoss).toLocaleString("en-US", {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2,
+            })}，税表汇总为 ${summary.currency} ${roundMoney(summary.realizedGainLoss).toLocaleString("en-US", {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2,
+            })}，差额 ${summary.currency} ${roundMoney(diff).toLocaleString("en-US", {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2,
+            })}。请确认账号、日期区间和币种口径是否一致。`
+          : "已识别同券商交易明细，系统会优先使用逐笔明细计算，税表汇总仅用于核对，不重复计入总体数据。";
+
+      return {
+        id: `${summary.id}-detail-reconciliation`,
+        severity: Math.abs(diff) > 1 ? "warning" : "info",
+        title: "已用交易明细核对税表汇总",
+        detail: diffText,
+        source: summary.source,
+      } satisfies ReviewIssue;
+    });
+}
+
+function inputIssuesForAnalysis(input: ParsedInput) {
+  const summariesWithDetails = new Set(
+    (input.taxStatementSummaries ?? [])
+      .filter((summary) => hasDetailedBrokerData(input, summary.broker))
+      .map((summary) => summary.id),
+  );
+  if (summariesWithDetails.size === 0) return input.issues;
+  return input.issues.filter((issue) => {
+    return !Array.from(summariesWithDetails).some((summaryId) => issue.id === `${summaryId}-no-trade-detail`);
+  });
 }
 
 export function costCorrectionKeyForRealizedTradeId(id: string) {
@@ -211,7 +282,7 @@ function replayScenario(
   const trades: RealizedTrade[] = [];
   let missingCostIssueCount = 0;
 
-  for (const activity of sortActivities(synthesizeActivities(input))) {
+  for (const activity of sortActivities(synthesizeActivities(input)).filter((item) => !item.excludedFromTaxReplay)) {
     const state =
       states.get(activityKey(activity)) ??
       ({
@@ -287,6 +358,10 @@ function replayScenario(
   };
 }
 
+function brokerReportedTradesInWindow(input: ParsedInput, window: TaxWindow) {
+  return input.realizedTrades.filter((trade) => trade.useBrokerReportedGainLoss && !trade.excluded && inWindow(trade.sellDate, window));
+}
+
 function costCorrectionMap(corrections: CostBasisCorrection[] = []) {
   const map = new Map<string, number>();
   for (const correction of corrections) {
@@ -332,10 +407,16 @@ function buildTaxScenarios(
   return taxWindows(targetYear).flatMap((window) => {
     return (["fifo", "acb"] as const).map((method) => {
       const result = replayScenario(input, window, method, config);
-      const trades = applyCostCorrections(result.trades, costCorrections);
+      const trades = applyCostCorrections([...result.trades, ...brokerReportedTradesInWindow(input, window)], costCorrections);
       const id = `calendar-${method}` as TaxScenarioId;
       const capitalGainRmb = capitalGainRmbFromTrades(trades, config);
-      const capitalTaxBaseRmb = Math.max(capitalGainRmb, 0);
+      const activeSummaries = activeTaxStatementSummaries(input, window);
+      const summaryCapitalGainRmb = activeSummaries.reduce(
+        (sum, summary) => sum + toRmb(summary.realizedGainLoss, summary.currency, config),
+        0,
+      );
+      const totalCapitalGainRmb = capitalGainRmb + summaryCapitalGainRmb;
+      const capitalTaxBaseRmb = Math.max(totalCapitalGainRmb, 0);
       return {
         id,
         label: `自然年 ${method.toUpperCase()}`,
@@ -344,7 +425,7 @@ function buildTaxScenarios(
         yearEnd: window.end,
         taxYearMode: window.mode,
         costBasisMethod: method,
-        capitalGainRmb: roundMoney(capitalGainRmb),
+        capitalGainRmb: roundMoney(totalCapitalGainRmb),
         capitalTaxBaseRmb: roundMoney(capitalTaxBaseRmb),
         capitalEstimatedTaxRmb: roundMoney(capitalTaxBaseRmb * config.taxRate),
         realizedTradeCount: trades.length,
@@ -361,6 +442,7 @@ export function analyzeTaxInput(
 ): TaxAnalysis {
   const included = input.realizedTrades.filter((trade) => !trade.excluded);
   const excluded = input.realizedTrades.filter((trade) => trade.excluded);
+  const activeSummaries = activeTaxStatementSummaries(input);
 
   const symbolMap = new Map<string, SymbolSummary>();
   const brokerMap = new Map<string, BrokerSummary>();
@@ -423,16 +505,44 @@ export function analyzeTaxInput(
   const capitalGainRmb = included.reduce(
     (sum, trade) => sum + toRmb(trade.gainLoss, trade.currency, config),
     0,
-  );
+  ) + activeSummaries.reduce((sum, summary) => sum + toRmb(summary.realizedGainLoss, summary.currency, config), 0);
   const capitalTaxBaseRmb = Math.max(capitalGainRmb, 0);
   const capitalEstimatedTaxRmb = capitalTaxBaseRmb * config.taxRate;
 
   const strictPositiveGainTaxReferenceRmb =
     included.reduce((sum, trade) => {
       return sum + toRmb(Math.max(trade.gainLoss, 0), trade.currency, config);
-    }, 0) * config.taxRate;
+    }, 0) * config.taxRate +
+    activeSummaries.reduce((sum, summary) => {
+      return sum + toRmb(Math.max(summary.realizedGainLoss, 0), summary.currency, config);
+    }, 0) *
+      config.taxRate;
 
-  const brokers = Array.from(brokerMap.values()).map((broker) => {
+  for (const summary of activeSummaries) {
+    const broker =
+      brokerMap.get(summary.broker) ??
+      ({
+        broker: summary.broker,
+        gainLossRmb: 0,
+        taxableBaseRmb: 0,
+        estimatedTaxRmb: 0,
+      } satisfies BrokerSummary);
+    broker.gainLossRmb += toRmb(summary.realizedGainLoss, summary.currency, config);
+    brokerMap.set(summary.broker, broker);
+
+    const currency =
+      currencyMap.get(summary.currency) ??
+      ({
+        currency: summary.currency,
+        gainLoss: 0,
+        taxableBase: 0,
+        estimatedTaxRmb: 0,
+      } satisfies CurrencySummary);
+    currency.gainLoss += summary.realizedGainLoss;
+    currencyMap.set(summary.currency, currency);
+  }
+
+  const finalBrokers = Array.from(brokerMap.values()).map((broker) => {
     const taxableBaseRmb = Math.max(broker.gainLossRmb, 0);
     return {
       ...broker,
@@ -455,11 +565,11 @@ export function analyzeTaxInput(
   const dividendGrossRmb = input.dividends.reduce(
     (sum, dividend) => sum + toRmb(dividend.grossAmount, dividend.currency, config),
     0,
-  );
+  ) + activeSummaries.reduce((sum, summary) => sum + toRmb(summary.cashDividends, summary.currency, config), 0);
   const withholdingCreditRmb = input.dividends.reduce(
     (sum, dividend) => sum + toRmb(dividend.taxWithheld, dividend.currency, config),
     0,
-  );
+  ) + activeSummaries.reduce((sum, summary) => sum + toRmb(Math.abs(summary.dividendTaxWithheld), summary.currency, config), 0);
   const dividendTaxBeforeCredit = dividendGrossRmb * config.taxRate;
   const dividendEstimatedTaxRmb = Math.max(dividendTaxBeforeCredit - withholdingCreditRmb, 0);
 
@@ -479,7 +589,7 @@ export function analyzeTaxInput(
       totalEstimatedTaxRmb: roundMoney(capitalEstimatedTaxRmb + dividendEstimatedTaxRmb),
       strictPositiveGainTaxReferenceRmb: roundMoney(strictPositiveGainTaxReferenceRmb),
     },
-    brokers,
+    brokers: finalBrokers,
     currencies,
     symbols: Array.from(symbolMap.values())
       .map((symbol) => ({
@@ -498,7 +608,7 @@ export function analyzeTaxInput(
     excludedTrades: excluded,
     dividends: input.dividends,
     openPositions: input.openPositions,
-    issues: input.issues,
+    issues: [...inputIssuesForAnalysis(input), ...taxStatementReviewIssues(input, included)],
     costBasisRequests: input.costBasisRequests,
     taxScenarios: buildTaxScenarios(input, config),
   };
@@ -513,7 +623,10 @@ export function analyzeTaxScenarioInput(
 ): TaxAnalysis {
   const [window] = taxWindows(targetYear);
   const scenario = replayScenario(input, window, costBasisMethod, config);
-  const correctedTrades = applyCostCorrections(scenario.trades, costCorrections);
+  const correctedTrades = applyCostCorrections(
+    [...scenario.trades, ...brokerReportedTradesInWindow(input, window)],
+    costCorrections,
+  );
   const dividends = input.dividends.filter((dividend) => inWindow(dividend.date, window));
   const scopedInput: ParsedInput = {
     ...input,
@@ -521,6 +634,7 @@ export function analyzeTaxScenarioInput(
     dividends,
     openPositions: input.openPositions.filter((position) => !position.asOf || position.asOf.startsWith(String(targetYear))),
     costBasisRequests: input.costBasisRequests.filter((request) => inWindow(request.sellDate, window)),
+    taxStatementSummaries: (input.taxStatementSummaries ?? []).filter((summary) => inSummaryPeriod(summary, window)),
   };
   const analysis = analyzeTaxInput(scopedInput, config);
   return {
@@ -537,6 +651,7 @@ export function emptyParsedInput(): ParsedInput {
     openPositions: [],
     issues: [],
     costBasisRequests: [],
+    taxStatementSummaries: [],
   };
 }
 
@@ -549,6 +664,7 @@ export function mergeParsedInputs(inputs: ParsedInput[]): ParsedInput {
       openPositions: [...merged.openPositions, ...current.openPositions],
       issues: [...merged.issues, ...current.issues],
       costBasisRequests: [...merged.costBasisRequests, ...current.costBasisRequests],
+      taxStatementSummaries: [...merged.taxStatementSummaries, ...(current.taxStatementSummaries ?? [])],
     }),
     emptyParsedInput(),
   );

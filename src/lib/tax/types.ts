@@ -34,6 +34,7 @@ export interface RealizedTrade {
   note?: string;
   excluded?: boolean;
   exclusionReason?: string;
+  useBrokerReportedGainLoss?: boolean;
 }
 
 export type TradeActivitySide = "buy" | "sell" | "acquire" | "transfer_in" | "transfer_out";
@@ -56,6 +57,21 @@ export interface TradeActivity {
   amount: number;
   source: string;
   note?: string;
+  excludedFromTaxReplay?: boolean;
+}
+
+export interface TaxStatementSummary {
+  id: string;
+  broker: string;
+  source: string;
+  currency: Currency;
+  periodStart?: string;
+  periodEnd?: string;
+  grossProceeds?: number;
+  realizedGainLoss: number;
+  cashDividends: number;
+  dividendTaxWithheld: number;
+  interest?: number;
 }
 
 export interface DividendIncome {
@@ -127,6 +143,7 @@ export interface ParsedInput {
   openPositions: OpenPosition[];
   issues: ReviewIssue[];
   costBasisRequests: CostBasisRequest[];
+  taxStatementSummaries: TaxStatementSummary[];
 }
 
 export interface SymbolSummary {

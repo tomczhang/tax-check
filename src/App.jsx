@@ -462,12 +462,14 @@ function useIsMobileDevice() {
 }
 
 function brokerLabel(broker) {
+  if (broker === "tiger") return "老虎";
   return broker === "longbridge" ? "长桥" : "富途";
 }
 
 const BROKER_OPTIONS = [
   { value: "futu", label: "富途" },
   { value: "longbridge", label: "长桥" },
+  { value: "tiger", label: "老虎" },
 ];
 const TAX_YEAR_OPTIONS = [2021, 2022, 2023, 2024, 2025];
 const PUBLISHER_NAME = "汤姆喵的奇妙旅行";
@@ -506,6 +508,7 @@ const TAX_FORM_GUIDES = {
 const FUTU_SHEET_MARKERS = ["账户信息", "证券-持仓总览", "证券-交易流水", "证券-资产进出", "证券-资金进出"];
 const FUTU_TEXT_MARKERS = ["富途", "futu", "moomoo", "牛牛号", "账户号码"];
 const LONGBRIDGE_TEXT_MARKERS = ["长桥", "longbridge", "long bridge", "long bridge hk", "long bridge securities"];
+const TIGER_TEXT_MARKERS = ["Tiger Brokers", "Tiger Brokers (NZ)", "老虎", "活动报表", "Tax Form Record", "Key Tax Figures"];
 
 function brokerConfidenceLabel(confidence) {
   if (confidence === "manual") return "手动选择";
@@ -574,11 +577,18 @@ function baseBrokerGuess(fileName) {
       reason: "文件名包含长桥特征，已默认选择长桥。",
     };
   }
+  if (fileName.includes("老虎") || lower.includes("tiger")) {
+    return {
+      broker: "tiger",
+      confidence: "high",
+      reason: "文件名包含老虎/Tiger 特征，已默认选择老虎。",
+    };
+  }
   if (isPdfFile(fileName)) {
     return {
       broker: "longbridge",
       confidence: "medium",
-      reason: "PDF 文件会默认按长桥月结单处理，请确认券商是否正确。",
+      reason: "PDF 文件会默认按长桥月结单处理；如为老虎报表，系统会继续尝试从内容自动识别。",
     };
   }
   if (isExcelFile(fileName)) {
@@ -640,10 +650,24 @@ async function detectBrokerFromFile(file) {
           reason: "文件内容包含长桥特征；当前长桥解析器主要支持 PDF 月结单，请解析前确认文件格式。",
         };
       }
+      if (hasAnyMarker(preview, TIGER_TEXT_MARKERS)) {
+        return {
+          broker: "tiger",
+          confidence: "medium",
+          reason: "文件内容包含老虎/Tiger 特征；当前老虎解析器支持 PDF 税表汇总和活动报表。",
+        };
+      }
     }
 
     if (isPdfFile(file.name)) {
       const preview = await file.slice(0, Math.min(file.size, 512 * 1024)).text();
+      if (hasAnyMarker(preview, TIGER_TEXT_MARKERS)) {
+        return {
+          broker: "tiger",
+          confidence: "high",
+          reason: "PDF 内容包含老虎/Tiger 报表特征，已默认选择老虎。",
+        };
+      }
       if (hasAnyMarker(preview, LONGBRIDGE_TEXT_MARKERS)) {
         return {
           broker: "longbridge",
@@ -997,7 +1021,7 @@ function Sidebar({
               <Upload />
             </span>
             <p>拖入或点击上传券商文件</p>
-            <span>支持富途 Excel / 长桥 PDF · .xlsx .xls .pdf</span>
+            <span>支持富途 Excel / 长桥 PDF / 老虎 PDF · .xlsx .xls .pdf</span>
           </button>
           <ul className="filelist">
             {files.map((file) => (
@@ -1071,6 +1095,7 @@ function PnlTable({
   tradeActivities = [],
   pendingCostFlashToken,
   hasLongbridgeNoStockActivity = false,
+  hasTaxSummaryNoTradeDetail = false,
 }) {
   const [query, setQuery] = useState("");
   const [market, setMarket] = useState("all");
@@ -1146,7 +1171,12 @@ function PnlTable({
               <tr>
                 <td colSpan="7">
                   <div className="empty-state pnl-empty-state">
-                    {rows.length === 0 && tradeActivities.length > 0 ? (
+                    {rows.length === 0 && hasTaxSummaryNoTradeDetail ? (
+                      <>
+                        <b>已读取税表汇总，缺少逐笔交易明细</b>
+                        <span>可以读取汇总金额，文件中的数据已经统计进总体数据，但在盈亏明细中无法展示。</span>
+                      </>
+                    ) : rows.length === 0 && tradeActivities.length > 0 ? (
                       <>
                         <b>当前材料没有形成已实现盈亏</b>
                         <span>
@@ -1843,6 +1873,7 @@ function Workbench({
   fx,
   pendingCostFlashToken,
   hasLongbridgeNoStockActivity,
+  hasTaxSummaryNoTradeDetail,
 }) {
   const [tab, setTab] = useState("pnl");
   const transferRecords = useMemo(() => transferRecordsFromActivities(tradeActivities), [tradeActivities]);
@@ -1895,6 +1926,7 @@ function Workbench({
                 tradeActivities={tradeActivities}
                 pendingCostFlashToken={pendingCostFlashToken}
                 hasLongbridgeNoStockActivity={hasLongbridgeNoStockActivity}
+                hasTaxSummaryNoTradeDetail={hasTaxSummaryNoTradeDetail}
               />
             ) : null}
             {tab === "div" ? <DividendsTable dividends={dividends} fx={fx} /> : null}
@@ -2486,7 +2518,7 @@ const TOUR_STEPS = [
   {
     target: "upload-card",
     title: "上传券商材料",
-    body: "从这里导入富途 Excel 年度报表或长桥 PDF 月结单。上传后系统会尝试判断券商和文件类型。",
+    body: "从这里导入富途 Excel 年度报表、长桥 PDF 月结单或老虎 PDF 报表。上传后系统会尝试判断券商和文件类型。",
     images: [
       {
         src: `${ASSET_BASE}tour/futu-annual-report.jpg`,
@@ -2564,7 +2596,7 @@ function ProjectIntroModal({ onStart, onClose }) {
         <TaxCheckMark className="intro-brand-mark" />
         <h2 id="intro-title">TaxCheck 是什么</h2>
         <p>
-          TaxCheck是快速为中国大陆居民打造的免费海外资本利得税计算工具，支持富途、长桥等券商。
+          TaxCheck是快速为中国大陆居民打造的免费海外资本利得税计算工具，支持富途、长桥、老虎等券商。
           <br />
           <br />
           <b>本工具承诺不保存任何你的财务数据，上传的文件仅在你本地解析使用。</b>
@@ -2575,6 +2607,7 @@ function ProjectIntroModal({ onStart, onClose }) {
         <div className="intro-points">
           <span>富途 Excel 年度报表</span>
           <span>长桥 PDF 月结单</span>
+          <span>老虎 PDF 税表/活动报表</span>
           <span>申报数字与 PDF 底稿</span>
         </div>
         <div className="intro-actions">
@@ -2906,6 +2939,10 @@ export default function App() {
   );
   const hasLongbridgeNoStockActivity = useMemo(
     () => (currentAnalysis?.issues ?? []).some((issue) => issue.id === "longbridge-no-stock-activity"),
+    [currentAnalysis],
+  );
+  const hasTaxSummaryNoTradeDetail = useMemo(
+    () => (currentAnalysis?.issues ?? []).some((issue) => String(issue.id ?? "").includes("-no-trade-detail")),
     [currentAnalysis],
   );
   const costBasisRequests = useMemo(() => currentAnalysis?.costBasisRequests ?? [], [currentAnalysis]);
@@ -3270,6 +3307,7 @@ export default function App() {
           fx={fx}
           pendingCostFlashToken={pendingCostFlashToken}
           hasLongbridgeNoStockActivity={hasLongbridgeNoStockActivity}
+          hasTaxSummaryNoTradeDetail={hasTaxSummaryNoTradeDetail}
         />
       ) : null}
       {page === "holdings" ? (
