@@ -190,6 +190,10 @@ function securityName(symbol: string) {
   return KNOWN_SECURITY_NAMES[symbol] ?? symbol;
 }
 
+function securityNameForCategory(symbol: string, category: unknown) {
+  return String(category ?? "").trim() === "基金" ? `基金 ${symbol}` : securityName(symbol);
+}
+
 function includesDividendMarker(note: string) {
   const upper = note.toUpperCase();
   return upper.includes("F/D") || upper.includes("S/D") || upper.includes("DIVIDEND");
@@ -221,6 +225,21 @@ function parseSecurityFromNote(note: string) {
 function extractIpoSymbol(note: string) {
   const match = note.match(/#0?(\d{3,5})/);
   return match ? normalizeSymbol(match[1]) : null;
+}
+
+function isSupportedTradeCategory(value: unknown) {
+  const category = String(value ?? "").trim();
+  return !category || category === "证券" || category === "基金";
+}
+
+function isFutuBuySide(value: unknown) {
+  const side = String(value ?? "");
+  return side.includes("买入") || side.includes("申购");
+}
+
+function isFutuSellSide(value: unknown) {
+  const side = String(value ?? "");
+  return side.includes("卖出") || side.includes("赎回");
 }
 
 function positionKey(currency: Currency, symbol: string) {
@@ -351,10 +370,10 @@ function parseFutuEvents(contexts: WorkbookContext[]) {
     const tradeHeaders = tradeRows[0] ?? [];
     for (const [index, values] of tradeRows.slice(1).entries()) {
       const row = rowObject(tradeHeaders, values);
-      if (String(row["品类"] ?? "") && String(row["品类"] ?? "") !== "证券") continue;
+      if (!isSupportedTradeCategory(row["品类"])) continue;
       const side = String(row["方向"] ?? "");
-      const isBuy = side.includes("买入");
-      const isSell = side.includes("卖出");
+      const isBuy = isFutuBuySide(side);
+      const isSell = isFutuSellSide(side);
       if (!isBuy && !isSell) continue;
       const symbol = normalizeSymbol(row["代码名称"]);
       const quantity = Math.abs(asNumber(row["数量/面值"]));
@@ -374,7 +393,7 @@ function parseFutuEvents(contexts: WorkbookContext[]) {
         market: marketName(row["交易所/市场"]),
         currency: asCurrency(row["币种"]),
         symbol,
-        securityName: securityName(symbol),
+        securityName: securityNameForCategory(symbol, row["品类"]),
         quantity,
         unitPrice,
         grossAmount,
@@ -609,7 +628,7 @@ function parseOpenPositions(contexts: WorkbookContext[], targetYear?: number): O
       const marketValue = asNumber(row["市值"]) || quantity * price * multiplier;
       const positionYear = Number(asOf.slice(0, 4));
       if (!periodType.includes("期末")) continue;
-      if (category && category !== "证券") continue;
+      if (category && category !== "证券" && category !== "基金") continue;
       if (targetYear && !asOf.startsWith(String(targetYear))) continue;
       if (!symbol || quantity <= 0 || !Number.isFinite(positionYear)) continue;
 
@@ -629,7 +648,7 @@ function parseOpenPositions(contexts: WorkbookContext[], targetYear?: number): O
         market: marketName(row["交易所/市场"]),
         currency,
         symbol,
-        securityName: securityName(symbol),
+        securityName: securityNameForCategory(symbol, row["品类"]),
         quantity,
         marketValue,
         source: sourceId(context.fileName, index + 2),
@@ -639,6 +658,87 @@ function parseOpenPositions(contexts: WorkbookContext[], targetYear?: number): O
   }
 
   return Array.from(positions.values());
+}
+
+function inferOpenPositionsFromEvents(events: FutuEvent[], targetYear: number, existingPositions: OpenPosition[]): OpenPosition[] {
+  const existingKeys = new Set(
+    existingPositions.map((position) => `${position.asOf.slice(0, 4)}::${position.currency}::${position.symbol}`),
+  );
+  const states = new Map<
+    string,
+    {
+      market: string;
+      currency: Currency;
+      symbol: string;
+      securityName: string;
+      quantity: number;
+      lastPrice: number;
+      lastDate: string;
+      source: string;
+    }
+  >();
+  const endDate = `${targetYear}-12-31`;
+
+  for (const event of events) {
+    if (event.date > endDate) continue;
+    const key = positionKey(event.currency, event.symbol);
+    const state =
+      states.get(key) ??
+      ({
+        market: event.market,
+        currency: event.currency,
+        symbol: event.symbol,
+        securityName: event.securityName,
+        quantity: 0,
+        lastPrice: 0,
+        lastDate: event.date,
+        source: event.source,
+      } satisfies {
+        market: string;
+        currency: Currency;
+        symbol: string;
+        securityName: string;
+        quantity: number;
+        lastPrice: number;
+        lastDate: string;
+        source: string;
+      });
+
+    state.market = event.market || state.market;
+    state.securityName = event.securityName || state.securityName;
+    state.lastDate = event.date;
+    state.source = event.source;
+
+    if (event.kind === "sell") {
+      state.quantity = Math.max(0, state.quantity - event.quantity);
+      state.lastPrice = event.unitPrice || state.lastPrice;
+    } else {
+      state.quantity += event.quantity;
+      if ("unitPrice" in event) state.lastPrice = event.unitPrice || state.lastPrice;
+    }
+
+    if (Math.abs(state.quantity) < 1e-8) state.quantity = 0;
+    states.set(key, state);
+  }
+
+  return Array.from(states.values())
+    .filter((state) => {
+      if (state.quantity <= 1e-8 || state.lastPrice <= 0) return false;
+      return !existingKeys.has(`${targetYear}::${state.currency}::${state.symbol}`);
+    })
+    .map((state) => ({
+      id: `futu-inferred-open-${targetYear}-${state.currency}-${state.symbol}`,
+      broker: "富途",
+      asOf: endDate,
+      market: state.market,
+      currency: state.currency,
+      symbol: state.symbol,
+      securityName: state.securityName,
+      quantity: state.quantity,
+      marketValue: state.quantity * state.lastPrice,
+      source: state.source,
+      note: `富途交易流水反推期末持仓；年度持仓总览未列出该标的，使用 ${state.lastDate} 最后成交价估算期末市值。`,
+    }));
 }
 
 export function parseFutuWorkbooks(files: FutuFileInput[], manualCosts: ManualCostInput[] = [], taxYear?: number): ParsedInput {
@@ -662,7 +762,8 @@ export function parseFutuWorkbooks(files: FutuFileInput[], manualCosts: ManualCo
   parsed.realizedTrades.push(...realized.trades);
   parsed.tradeActivities.push(...buildTradeActivities(events));
   parsed.dividends.push(...parseDividends(contexts));
-  parsed.openPositions.push(...parseOpenPositions(contexts));
+  const openPositions = parseOpenPositions(contexts, targetYear);
+  parsed.openPositions.push(...openPositions, ...inferOpenPositionsFromEvents(events, targetYear, openPositions));
   parsed.issues.push(...realized.issues);
   parsed.costBasisRequests.push(...realized.costBasisRequests);
 

@@ -1460,7 +1460,7 @@ tr.open {
 .inline-cost {
   display: grid;
   grid-template-columns: minmax(340px, 560px) max-content;
-  align-items: flex-end;
+  align-items: start;
   gap: 12px;
   max-width: 760px;
 }
@@ -1529,6 +1529,13 @@ tr.open {
   grid-area: input;
   min-width: 0;
   margin-top: 0;
+}
+
+.inline-cost > .btn {
+  align-self: start;
+  min-height: 32px;
+  height: 32px;
+  margin-top: 22px;
 }
 
 .txn-table {

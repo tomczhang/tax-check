@@ -133,6 +133,10 @@ function activityKey(activity: Pick<TradeActivity, "broker" | "currency" | "symb
   return key([activity.broker, activity.currency, activity.symbol]);
 }
 
+function positionKey(position: Pick<OpenPosition, "broker" | "currency" | "symbol">) {
+  return key([position.broker, position.currency, position.symbol]);
+}
+
 function maxActivityYear(input: ParsedInput) {
   const years = [...input.tradeActivities.map((activity) => activity.date), ...input.realizedTrades.map((trade) => trade.sellDate)]
     .map((date) => Number(date.slice(0, 4)))
@@ -271,6 +275,10 @@ function consumeFifo(state: ReplayState, quantity: number) {
   return costBasis;
 }
 
+function quantityMatches(left: number, right: number) {
+  return Math.abs(left - right) <= Math.max(1e-7, Math.abs(right) * 1e-7);
+}
+
 function replayScenario(
   input: ParsedInput,
   window: TaxWindow,
@@ -283,6 +291,7 @@ function replayScenario(
   let missingCostIssueCount = 0;
 
   for (const activity of sortActivities(synthesizeActivities(input)).filter((item) => !item.excludedFromTaxReplay)) {
+    if (activity.date > window.end) break;
     const state =
       states.get(activityKey(activity)) ??
       ({
@@ -355,7 +364,29 @@ function replayScenario(
     missingCostIssueCount,
     realizedTradeCount: trades.length,
     trades,
+    endingStates: states,
   };
+}
+
+function enrichOpenPositionsWithEndingCosts(
+  positions: OpenPosition[],
+  endingStates: Map<string, ReplayState>,
+  costBasisMethod: CostBasisMethod,
+): OpenPosition[] {
+  return positions.map((position) => {
+    if (Number.isFinite(position.costBasis) && Number.isFinite(position.unrealizedGainLoss)) return position;
+    const state = endingStates.get(positionKey(position));
+    if (!state || state.quantity <= 1e-8 || !quantityMatches(state.quantity, position.quantity)) return position;
+
+    const costBasis = roundMoney(state.costBasis);
+    const unrealizedGainLoss = roundMoney(position.marketValue - state.costBasis);
+    return {
+      ...position,
+      costBasis,
+      unrealizedGainLoss,
+      note: `${position.note ? `${position.note}；` : ""}已按${costBasisMethod.toUpperCase()}重放交易流水估算期末剩余成本。`,
+    };
+  });
 }
 
 function brokerReportedTradesInWindow(input: ParsedInput, window: TaxWindow) {
@@ -628,11 +659,16 @@ export function analyzeTaxScenarioInput(
     costCorrections,
   );
   const dividends = input.dividends.filter((dividend) => inWindow(dividend.date, window));
+  const openPositions = enrichOpenPositionsWithEndingCosts(
+    input.openPositions.filter((position) => !position.asOf || position.asOf.startsWith(String(targetYear))),
+    scenario.endingStates,
+    costBasisMethod,
+  );
   const scopedInput: ParsedInput = {
     ...input,
     realizedTrades: correctedTrades,
     dividends,
-    openPositions: input.openPositions.filter((position) => !position.asOf || position.asOf.startsWith(String(targetYear))),
+    openPositions,
     costBasisRequests: input.costBasisRequests.filter((request) => inWindow(request.sellDate, window)),
     taxStatementSummaries: (input.taxStatementSummaries ?? []).filter((summary) => inSummaryPeriod(summary, window)),
   };

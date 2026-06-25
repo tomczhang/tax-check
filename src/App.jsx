@@ -81,6 +81,10 @@ function cnSigned(n, digits = 2) {
   return `${n >= 0 ? "+" : "-"}${fmt(n, digits)}`;
 }
 
+function floatingPnlLabel(value) {
+  return `${value >= 0 ? "浮盈" : "浮亏"} ${cnSigned(value)}`;
+}
+
 function methodById(methodId) {
   return COST_METHODS.find((method) => method.id === methodId) ?? COST_METHODS[0];
 }
@@ -276,15 +280,13 @@ function rowsFromAnalysis(analysis) {
       };
     })
     .filter(Boolean);
-  const occupiedKeys = new Set([...existingKeys, ...missingRows.map((row) => row.key)]);
   const positionRows = (analysis.openPositions ?? [])
     .map((position) => {
-      const key = `${position.broker}::${position.currency}::${position.symbol}`;
-      if (occupiedKeys.has(key)) return null;
+      const baseKey = `${position.broker}::${position.currency}::${position.symbol}`;
       const market = currencyToMarket(position.currency, position.market);
       const unrealized = Number.isFinite(position.unrealizedGainLoss) ? position.unrealizedGainLoss : null;
       return {
-        key,
+        key: `${baseKey}::position`,
         broker: position.broker,
         market,
         code: position.symbol,
@@ -1320,11 +1322,11 @@ function PnlTable({
                     </td>
                     <td className={`r num pnl ${row.missingCost || row.positionOnly ? "" : classForNumber(row.pnlOriginal)}`}>
                       {row.missingCost
-                        ? `${row.currency} ${fmt(row.proceeds)}`
+                        ? `市值 ${fmt(row.proceeds)}`
                         : row.positionOnly
                           ? row.pnlOriginal === null
-                            ? "期末持仓"
-                            : `未实现 ${cnSigned(row.pnlOriginal)}`
+                            ? `市值 ${fmt(row.proceeds)}`
+                            : floatingPnlLabel(row.pnlOriginal)
                           : cnSigned(row.pnlOriginal)}
                     </td>
                     <td className="r num muted">{(fx[row.market] ?? 1).toFixed(4)}</td>
@@ -1514,7 +1516,7 @@ function PnlDetailRow({
                 {displayRowCode(row.code)} · {row.name}
               </b>{" "}
               期末持仓，不参与已实现盈亏计算
-              <span className="dh-note">该标的只有期末持仓或未实现盈亏；卖出发生后才会进入财产转让所得计算。</span>
+              <span className="dh-note">该行只展示期末持仓或未实现盈亏；卖出发生后才会进入财产转让所得计算。</span>
             </div>
             <SymbolAliasForm
               row={row}
@@ -1544,7 +1546,7 @@ function PnlDetailRow({
               <div>
                 <span>未实现盈亏</span>
                 <b className={row.pnlOriginal === null ? "" : classForNumber(row.pnlOriginal)}>
-                  {row.pnlOriginal === null ? "N/A" : cnSigned(row.pnlOriginal)}
+                  {row.pnlOriginal === null ? "N/A" : floatingPnlLabel(row.pnlOriginal)}
                 </b>
               </div>
               <div>
@@ -3429,11 +3431,11 @@ export default function App() {
         ? "待补成本"
         : row.positionOnly
           ? row.pnlOriginal === null
-            ? "期末持仓（不计入）"
-            : `未实现 ${row.pnlOriginal.toFixed(2)}（不计入）`
+            ? `市值 ${row.proceeds.toFixed(2)}（不计入）`
+            : `${floatingPnlLabel(row.pnlOriginal)}（不计入）`
           : row.pnlOriginal.toFixed(2),
       (fx[row.market] ?? 1).toFixed(4),
-      row.missingCost || row.positionOnly ? "" : row.rmb.toFixed(2),
+      row.missingCost ? "" : row.positionOnly ? "不参与计算" : row.rmb.toFixed(2),
     ]);
     const csv = [header, ...body].map((line) => line.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(",")).join("\n");
     const blob = new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8" });

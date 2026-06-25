@@ -62,6 +62,29 @@ interface StockTradeRecord {
   codeResolution: "explicit" | "known_alias" | "name_fallback";
 }
 
+interface StockTradeFields {
+  tradeDate: string;
+  settleDate: string;
+  orderId: string;
+  side: string;
+  item: string;
+  quantity: string;
+  avgPrice: string;
+  tradeAmount: string;
+  cashChange: string;
+}
+
+interface PortfolioFields {
+  item: string;
+  beginQty: string;
+  changeQty: string;
+  endQty: string;
+  price: string;
+  marketValue: string;
+  avgCost: string;
+  unrealizedGainLoss: string;
+}
+
 interface CashFlowRecord {
   sourcePdf: string;
   page: number;
@@ -93,6 +116,7 @@ interface PositionMoveRecord {
 interface PortfolioRecord {
   sourcePdf: string;
   page: number;
+  statementMonth?: string;
   market: string;
   currency: Currency;
   code: string;
@@ -486,6 +510,93 @@ function inferTradeMarket(item: string, security: ReturnType<typeof splitSecurit
   return { market: "香港市场", currency: "HKD" as const };
 }
 
+function parseInlineStockTradeFields(line: TextLine): StockTradeFields | null {
+  const amountPattern = String.raw`[+-]?\d[\d,]*(?:\.\d+)?`;
+  const match = canonicalText(line.text).match(
+    new RegExp(
+      String.raw`^(20\d{2}\.\d{2}\.\d{2})\s+` +
+        String.raw`(20\d{2}\.\d{2}\.\d{2})\s+` +
+        String.raw`(OS\d+)\s+` +
+        String.raw`(\S+)\s+` +
+        String.raw`(.+?)\s+` +
+        `(${amountPattern})\\s+` +
+        `(${amountPattern})\\s+` +
+        `(${amountPattern})\\s+` +
+        `(${amountPattern})$`,
+    ),
+  );
+  if (!match) return null;
+  return {
+    tradeDate: match[1],
+    settleDate: match[2],
+    orderId: match[3],
+    side: match[4],
+    item: clean(match[5]),
+    quantity: match[6],
+    avgPrice: match[7],
+    tradeAmount: match[8],
+    cashChange: match[9],
+  };
+}
+
+function isNumericCell(value: string) {
+  return /^[+-]?\d[\d,]*(?:\.\d+)?$/.test(canonicalText(value).trim());
+}
+
+function hasCompleteStockTradeFields(fields: StockTradeFields) {
+  return (
+    DATE_RE.test(fields.tradeDate) &&
+    DATE_RE.test(fields.settleDate) &&
+    /^OS\d+/.test(fields.orderId) &&
+    (fields.side.includes("买") || fields.side.includes("卖")) &&
+    Boolean(fields.item) &&
+    isNumericCell(fields.quantity) &&
+    isNumericCell(fields.avgPrice) &&
+    isNumericCell(fields.tradeAmount) &&
+    isNumericCell(fields.cashChange)
+  );
+}
+
+function parseInlinePortfolioFields(line: TextLine): PortfolioFields | null {
+  const amountPattern = String.raw`[+-]?\d[\d,]*(?:\.\d+)?`;
+  const match = canonicalText(line.text).match(
+    new RegExp(
+      String.raw`^(.+?)\s+` +
+        `(${amountPattern})\\s+` +
+        `(${amountPattern})\\s+` +
+        `(${amountPattern})\\s+` +
+        `(${amountPattern})\\s+` +
+        `(${amountPattern})\\s+` +
+        `(${amountPattern})\\s+` +
+        `(${amountPattern})(?:\\s+.*)?$`,
+    ),
+  );
+  if (!match) return null;
+  return {
+    item: clean(match[1]),
+    beginQty: match[2],
+    changeQty: match[3],
+    endQty: match[4],
+    price: match[5],
+    marketValue: match[6],
+    avgCost: match[7],
+    unrealizedGainLoss: match[8],
+  };
+}
+
+function hasCompletePortfolioFields(fields: PortfolioFields) {
+  return (
+    Boolean(fields.item) &&
+    isNumericCell(fields.beginQty) &&
+    isNumericCell(fields.changeQty) &&
+    isNumericCell(fields.endQty) &&
+    isNumericCell(fields.price) &&
+    isNumericCell(fields.marketValue) &&
+    isNumericCell(fields.avgCost) &&
+    isNumericCell(fields.unrealizedGainLoss)
+  );
+}
+
 async function extractPdfLines(fileName: string, data: ArrayBuffer, password?: string) {
   const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
   pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
@@ -567,40 +678,43 @@ function parseStockTradeLine(
   documentAliases: Map<string, SecurityAlias>,
 ): StockTradeRecord | null {
   if (!hasDateAtStart(line)) return null;
-  const tradeDate = lineCell(line, 0, 76);
-  const settleDate = lineCell(line, 76, 137);
-  const orderId = lineCell(line, 137, 220);
-  const side = canonicalLineCell(line, 220, 252);
-  const item = lineCell(line, 252, 358);
-  const quantity = lineCell(line, 358, 402);
-  const avgPrice = lineCell(line, 402, 455);
-  const tradeAmount = lineCell(line, 455, 525);
-  const cashChange = lineCell(line, 525, 610);
+  const cellFields: StockTradeFields = {
+    tradeDate: lineCell(line, 0, 76),
+    settleDate: lineCell(line, 76, 137),
+    orderId: lineCell(line, 137, 220),
+    side: canonicalLineCell(line, 220, 252),
+    item: lineCell(line, 252, 358),
+    quantity: lineCell(line, 358, 402),
+    avgPrice: lineCell(line, 402, 455),
+    tradeAmount: lineCell(line, 455, 525),
+    cashChange: lineCell(line, 525, 610),
+  };
+  const fields = hasCompleteStockTradeFields(cellFields) ? cellFields : parseInlineStockTradeFields(line);
 
-  if (!DATE_RE.test(tradeDate) || !DATE_RE.test(settleDate) || !/^OS\d+/.test(orderId)) {
+  if (!fields || !DATE_RE.test(fields.tradeDate) || !DATE_RE.test(fields.settleDate) || !/^OS\d+/.test(fields.orderId)) {
     return null;
   }
-  if (!side.includes("买") && !side.includes("卖")) return null;
+  if (!fields.side.includes("买") && !fields.side.includes("卖")) return null;
 
-  const security = splitSecurity(item, documentAliases);
-  if (!security.code || !quantity || !avgPrice || !tradeAmount || !cashChange) return null;
-  const inferredMarket = inferTradeMarket(item, security);
+  const security = splitSecurity(fields.item, documentAliases);
+  if (!security.code || !fields.quantity || !fields.avgPrice || !fields.tradeAmount || !fields.cashChange) return null;
+  const inferredMarket = inferTradeMarket(fields.item, security);
 
   return {
     sourcePdf,
     page: line.page,
     market: market || inferredMarket.market,
     currency: market ? currency : inferredMarket.currency,
-    tradeDate,
-    settleDate,
-    orderId,
-    side,
+    tradeDate: fields.tradeDate,
+    settleDate: fields.settleDate,
+    orderId: fields.orderId,
+    side: fields.side,
     code: security.code,
     name: security.name,
-    quantity: parseNumber(quantity),
-    avgPrice: parseNumber(avgPrice),
-    tradeAmount: parseNumber(tradeAmount),
-    cashChange: parseNumber(cashChange),
+    quantity: parseNumber(fields.quantity),
+    avgPrice: parseNumber(fields.avgPrice),
+    tradeAmount: parseNumber(fields.tradeAmount),
+    cashChange: parseNumber(fields.cashChange),
     sequence,
     codeResolution: security.codeResolution,
   };
@@ -683,47 +797,53 @@ function parsePositionMoveLine(
 function parsePortfolioLine(
   sourcePdf: string,
   line: TextLine,
+  statementMonth: string,
   market: string,
   currency: Currency,
   documentAliases: Map<string, SecurityAlias>,
 ): PortfolioRecord | null {
-  const item = lineCell(line, 0, 120);
-  const canonicalItem = canonicalText(item);
-  if (!item || canonicalItem.startsWith("汇总") || canonicalItem.startsWith("股票") || canonicalItem.startsWith("余额通")) {
+  const cellFields: PortfolioFields = {
+    item: lineCell(line, 0, 120),
+    beginQty: lineCell(line, 120, 170),
+    changeQty: lineCell(line, 170, 225),
+    endQty: lineCell(line, 225, 275),
+    price: lineCell(line, 275, 318),
+    marketValue: lineCell(line, 318, 370),
+    avgCost: lineCell(line, 370, 414),
+    unrealizedGainLoss: lineCell(line, 414, 470),
+  };
+  const fields = hasCompletePortfolioFields(cellFields) ? cellFields : parseInlinePortfolioFields(line);
+  if (!fields) return null;
+
+  const canonicalItem = canonicalText(fields.item);
+  if (!fields.item || canonicalItem.startsWith("汇总") || canonicalItem.startsWith("股票") || canonicalItem.startsWith("余额通")) {
     return null;
   }
 
-  const beginQty = lineCell(line, 120, 170);
-  const changeQty = lineCell(line, 170, 225);
-  const endQty = lineCell(line, 225, 275);
-  const price = lineCell(line, 275, 318);
-  const marketValue = lineCell(line, 318, 370);
-  const avgCost = lineCell(line, 370, 414);
-  const unrealizedGainLoss = lineCell(line, 414, 470);
-
-  if (!beginQty || !changeQty || !endQty || !price || !marketValue || !avgCost || !unrealizedGainLoss) {
+  if (!hasCompletePortfolioFields(fields)) {
     return null;
   }
 
-  const security = splitSecurity(item, documentAliases);
+  const security = splitSecurity(fields.item, documentAliases);
   if (!market && security.codeResolution === "name_fallback") return null;
   if (!security.code) return null;
-  const inferredMarket = inferTradeMarket(item, security);
+  const inferredMarket = inferTradeMarket(fields.item, security);
 
   return {
     sourcePdf,
     page: line.page,
+    statementMonth: statementMonth || undefined,
     market: market || inferredMarket.market,
     currency: market ? currency : inferredMarket.currency,
     code: security.code,
     name: security.name,
-    beginQty: parseNumber(beginQty),
-    changeQty: parseNumber(changeQty),
-    endQty: parseNumber(endQty),
-    price: parseNumber(price),
-    marketValue: parseNumber(marketValue),
-    avgCost: parseNumber(avgCost),
-    unrealizedGainLoss: parseNumber(unrealizedGainLoss),
+    beginQty: parseNumber(fields.beginQty),
+    changeQty: parseNumber(fields.changeQty),
+    endQty: parseNumber(fields.endQty),
+    price: parseNumber(fields.price),
+    marketValue: parseNumber(fields.marketValue),
+    avgCost: parseNumber(fields.avgCost),
+    unrealizedGainLoss: parseNumber(fields.unrealizedGainLoss),
   };
 }
 
@@ -780,6 +900,7 @@ function parseLongbridgeLines(
   let moveMarket = "";
   let portfolioMarket = "";
   let portfolioCurrency: Currency = "HKD";
+  let statementMonth = "";
   let sequence = 0;
   const fallbackSecurityNames = new Map<string, string>();
   const documentSecurityAliases = manualSecurityAliasMap(manualAliases);
@@ -788,6 +909,10 @@ function parseLongbridgeLines(
     const text = canonicalText(line.text);
     if (isLongbridgeMonthlyStatement(text)) {
       raw.statementDetected = true;
+    }
+    const statementMonthMatch = text.match(/^(20\d{2})\.(0[1-9]|1[0-2])$/);
+    if (statementMonthMatch) {
+      statementMonth = `${statementMonthMatch[1]}-${statementMonthMatch[2]}`;
     }
     if (text.includes("项目") && text.includes("期初持仓") && text.includes("浮动盈亏")) {
       activeTable = "portfolio";
@@ -863,7 +988,7 @@ function parseLongbridgeLines(
     }
 
     if (activeTable === "none") {
-      const position = parsePortfolioLine(sourcePdf, line, portfolioMarket, portfolioCurrency, documentSecurityAliases);
+      const position = parsePortfolioLine(sourcePdf, line, statementMonth, portfolioMarket, portfolioCurrency, documentSecurityAliases);
       if (position) {
         raw.positions.push(position);
         addDocumentSecurityAlias(documentSecurityAliases, position);
@@ -872,7 +997,7 @@ function parseLongbridgeLines(
     }
 
     if (activeTable === "portfolio") {
-      const position = parsePortfolioLine(sourcePdf, line, portfolioMarket, portfolioCurrency, documentSecurityAliases);
+      const position = parsePortfolioLine(sourcePdf, line, statementMonth, portfolioMarket, portfolioCurrency, documentSecurityAliases);
       if (position) {
         raw.positions.push(position);
         addDocumentSecurityAlias(documentSecurityAliases, position);
@@ -1381,10 +1506,11 @@ function buildOpenPositions(raw: LongbridgeRawData): OpenPosition[] {
 
   return Array.from(latestByCode.values()).map((position) => {
     const statementMonth = position.sourcePdf.match(/(20\d{2})[-_年.]?(0[1-9]|1[0-2])/);
+    const asOfMonth = position.statementMonth ?? (statementMonth ? `${statementMonth[1]}-${statementMonth[2]}` : "");
     return {
       id: `longbridge-open-${position.currency}-${position.code}`,
       broker: "长桥",
-      asOf: statementMonth ? `${statementMonth[1]}-${statementMonth[2]}-末` : "",
+      asOf: asOfMonth ? `${asOfMonth}-末` : "",
       market: canonicalText(position.market),
       currency: position.currency,
       symbol: displayCode(position.code),
