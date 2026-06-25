@@ -1219,7 +1219,6 @@ function PnlTable({
                 已实现盈亏合计
               </td>
               <td className={`r num pnl ${classForNumber(summary.capitalGain)}`}>{cnSigned(summary.capitalGain)}</td>
-              <td />
             </tr>
           </tfoot>
         </table>
