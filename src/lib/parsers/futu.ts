@@ -123,6 +123,7 @@ const KNOWN_SECURITY_NAMES: Record<string, string> = {
   "06613": "蓝思科技 / LENS",
   "09618": "京东集团-SW / JD-SW",
   "09988": "阿里巴巴-W / BABA-W",
+  DIDI: "滴滴 / DIDI",
 };
 
 function rowObject(headers: unknown[], values: unknown[]) {
@@ -279,6 +280,28 @@ function stateAvgShortProceeds(state: PositionState) {
 
 function tradeId(event: FutuEvent, costBasis: number) {
   return `futu-${event.date}-${event.currency}-${event.symbol}-${event.quantity}-${Math.round(costBasis * 100)}`;
+}
+
+function dateYear(value: unknown) {
+  const year = Number(String(value ?? "").slice(0, 4));
+  return Number.isFinite(year) && year >= 2000 ? year : null;
+}
+
+function availableYears(
+  contexts: WorkbookContext[],
+  events: FutuEvent[],
+  dividends: DividendIncome[],
+  openPositions: OpenPosition[],
+  fallbackYear?: number,
+) {
+  const detectedYears = [
+    ...contexts.map((context) => context.year),
+    ...events.map((event) => dateYear(event.date)),
+    ...dividends.map((dividend) => dateYear(dividend.date)),
+    ...openPositions.map((position) => dateYear(position.asOf)),
+  ].filter((year): year is number => Number.isFinite(year) && Number(year) >= 2000);
+  if (detectedYears.length > 0) return Array.from(new Set(detectedYears)).sort((a, b) => a - b);
+  return Number.isFinite(fallbackYear) && Number(fallbackYear) >= 2000 ? [Number(fallbackYear)] : [];
 }
 
 function activityAmount(event: FutuEvent) {
@@ -527,6 +550,7 @@ function buildRealizedTrades(
             title: `${event.symbol} 做空开仓记录缺失`,
             detail: `${event.date} 买入平仓 ${event.quantity} 股，但上传文件中最多只追踪到 ${state.shortQuantity} 股卖出开仓；这笔做空平仓未计入资本利得。请补充包含卖出开仓的富途年度报表。`,
             source: event.source,
+            taxYear: targetYear,
           });
         }
         state.shortQuantity = 0;
@@ -689,6 +713,7 @@ function buildRealizedTrades(
       title: `${item.symbol} 历史成本缺失`,
       detail: `${item.sellDate} 卖出 ${item.quantity} 股，但上传文件中最多只追踪到 ${item.trackedQuantity} 股成本；这笔卖出未计入资本利得，需要补充更早年度记录或手动在 **盈亏明细-待补成本** 中添加成本。`,
       source: item.source,
+      taxYear: targetYear,
     });
   }
 
@@ -852,17 +877,24 @@ export function parseFutuWorkbooks(files: FutuFileInput[], manualCosts: ManualCo
 
   if (contexts.length === 0) return parsed;
 
-  const targetYear = taxYear ?? Math.max(...contexts.map((context) => context.year));
   const events = parseFutuEvents(contexts);
-  const realized = buildRealizedTrades(events, targetYear, manualCostMap(manualCosts));
+  const dividends = parseDividends(contexts);
+  const openPositions = parseOpenPositions(contexts);
+  const years = availableYears(contexts, events, dividends, openPositions, taxYear);
+  const manualCostLookup = manualCostMap(manualCosts);
 
-  parsed.realizedTrades.push(...realized.trades);
+  for (const year of years) {
+    const realized = buildRealizedTrades(events, year, manualCostLookup);
+    parsed.realizedTrades.push(...realized.trades);
+    parsed.issues.push(...realized.issues);
+    parsed.costBasisRequests.push(...realized.costBasisRequests);
+  }
   parsed.tradeActivities.push(...buildTradeActivities(events));
-  parsed.dividends.push(...parseDividends(contexts));
-  const openPositions = parseOpenPositions(contexts, targetYear);
-  parsed.openPositions.push(...openPositions, ...inferOpenPositionsFromEvents(events, targetYear, openPositions));
-  parsed.issues.push(...realized.issues);
-  parsed.costBasisRequests.push(...realized.costBasisRequests);
+  parsed.dividends.push(...dividends);
+  parsed.openPositions.push(
+    ...openPositions,
+    ...years.flatMap((year) => inferOpenPositionsFromEvents(events, year, openPositions)),
+  );
 
   return parsed;
 }

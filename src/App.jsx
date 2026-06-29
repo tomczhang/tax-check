@@ -1003,6 +1003,38 @@ function guessFileType(fileName) {
   return "待识别";
 }
 
+function fileYearKey(file) {
+  const match = String(file?.name ?? "").match(/20\d{2}/);
+  return match?.[0] ?? "unknown";
+}
+
+function fileYearLabel(yearKey) {
+  return yearKey === "unknown" ? "未识别年份" : `${yearKey} 年`;
+}
+
+function groupFilesByYear(files) {
+  const groups = new Map();
+  (files ?? []).forEach((file, index) => {
+    const yearKey = fileYearKey(file);
+    const existing =
+      groups.get(yearKey) ??
+      ({
+        key: yearKey,
+        label: fileYearLabel(yearKey),
+        sortYear: yearKey === "unknown" ? -Infinity : Number(yearKey),
+        firstIndex: index,
+        files: [],
+      });
+    existing.files.push(file);
+    groups.set(yearKey, existing);
+  });
+
+  return Array.from(groups.values()).sort((a, b) => {
+    if (a.sortYear !== b.sortYear) return b.sortYear - a.sortYear;
+    return a.firstIndex - b.firstIndex;
+  });
+}
+
 function buildFlows() {
   const dates = ["01-08", "02-19", "03-25", "04-11", "05-20", "06-17", "08-05", "09-12", "10-21", "11-08", "12-16", "12-27"];
   const flows = [];
@@ -1298,6 +1330,37 @@ function Kpis({ summary }) {
   );
 }
 
+function BrokerFileItem({ file, onBrokerChange, onRemoveFile }) {
+  return (
+    <li className="file">
+      <span className="fi">
+        <FileText />
+      </span>
+      <span className="meta">
+        <b title={file.name}>{file.name}</b>
+        <span className="file-summary">
+          <span>{brokerLabel(file.broker)} · {file.type} · {typeof file.rows === "number" ? `${file.rows} 行` : file.rows}</span>
+          <span className={`broker-confidence ${file.brokerConfidence ?? "low"}`} title={file.brokerReason}>
+            {brokerConfidenceLabel(file.brokerConfidence)}
+          </span>
+        </span>
+        <select className="broker-select" value={file.broker} onChange={(event) => onBrokerChange(file.id, event.target.value)}>
+          {BROKER_OPTIONS.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+        <span className="broker-reason">{file.brokerReason}</span>
+      </span>
+      <button className="file-remove" type="button" title="删除文件" onClick={() => onRemoveFile(file.id)}>
+        <Trash2 />
+      </button>
+      {file.status === "已解析" ? <Check className="ok" /> : null}
+    </li>
+  );
+}
+
 function Sidebar({
   year,
   files,
@@ -1309,6 +1372,31 @@ function Sidebar({
   password,
   onPasswordChange,
 }) {
+  const fileGroups = useMemo(() => groupFilesByYear(files), [files]);
+  const [collapsedFileYears, setCollapsedFileYears] = useState({});
+
+  useEffect(() => {
+    setCollapsedFileYears((current) => {
+      const next = {};
+      const hasMultipleYears = fileGroups.length > 1;
+      const activeYear = String(year);
+      for (const group of fileGroups) {
+        const hasManyFiles = group.files.length > 6;
+        next[group.key] = Object.prototype.hasOwnProperty.call(current, group.key)
+          ? current[group.key]
+          : hasManyFiles || (hasMultipleYears && group.key !== activeYear);
+      }
+      return next;
+    });
+  }, [fileGroups, year]);
+
+  function toggleFileYear(yearKey) {
+    setCollapsedFileYears((current) => ({
+      ...current,
+      [yearKey]: !current[yearKey],
+    }));
+  }
+
   return (
     <aside>
       <div className="panel" data-tour-id="broker-files-panel">
@@ -1327,34 +1415,30 @@ function Sidebar({
             <span>支持富途 Excel / 长桥 PDF / 熊猫 PDF / 招商永隆 PDF / 卓锐 PDF / 盈立 PDF / 老虎 PDF / IBKR PDF · .xlsx .xls .pdf</span>
           </button>
           <ul className="filelist">
-            {files.map((file) => (
-              <li className="file" key={file.id}>
-                <span className="fi">
-                  <FileText />
-                </span>
-                <span className="meta">
-                  <b title={file.name}>{file.name}</b>
-                  <span className="file-summary">
-                    <span>{brokerLabel(file.broker)} · {file.type} · {typeof file.rows === "number" ? `${file.rows} 行` : file.rows}</span>
-                    <span className={`broker-confidence ${file.brokerConfidence ?? "low"}`} title={file.brokerReason}>
-                      {brokerConfidenceLabel(file.brokerConfidence)}
-                    </span>
-                  </span>
-                  <select className="broker-select" value={file.broker} onChange={(event) => onBrokerChange(file.id, event.target.value)}>
-                    {BROKER_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                  <span className="broker-reason">{file.brokerReason}</span>
-                </span>
-                <button className="file-remove" type="button" title="删除文件" onClick={() => onRemoveFile(file.id)}>
-                  <Trash2 />
-                </button>
-                {file.status === "已解析" ? <Check className="ok" /> : null}
-              </li>
-            ))}
+            {fileGroups.map((group) => {
+              const isCollapsed = Boolean(collapsedFileYears[group.key]);
+              return (
+                <li className="file-year-group" key={group.key}>
+                  <button
+                    className={`file-year-toggle${isCollapsed ? "" : " open"}`}
+                    type="button"
+                    aria-expanded={!isCollapsed}
+                    onClick={() => toggleFileYear(group.key)}
+                  >
+                    <ChevronRight className="file-year-caret" />
+                    <span className="file-year-title">{group.label}</span>
+                    <span className="file-year-count">{group.files.length} 份</span>
+                  </button>
+                  {!isCollapsed ? (
+                    <ul className="file-year-files">
+                      {group.files.map((file) => (
+                        <BrokerFileItem key={file.id} file={file} onBrokerChange={onBrokerChange} onRemoveFile={onRemoveFile} />
+                      ))}
+                    </ul>
+                  ) : null}
+                </li>
+              );
+            })}
           </ul>
           <label className="field-label">
             <span>PDF 月结单密码</span>

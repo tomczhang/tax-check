@@ -296,8 +296,25 @@ const KNOWN_SECURITY_ALIASES: Record<string, SecurityAlias> = {
   microsoft: { code: "MSFT", name: "Microsoft", market: "美国市场", currency: "USD" },
   "micron tech": { code: "MU", name: "Micron Tech", market: "美国市场", currency: "USD" },
   nvidia: { code: "NVDA", name: "NVIDIA", market: "美国市场", currency: "USD" },
+  "lockheed martin": { code: "LMT", name: "Lockheed Martin", market: "美国市场", currency: "USD" },
+  intel: { code: "INTC", name: "Intel", market: "美国市场", currency: "USD" },
+  "ak medical": { code: "01789", name: "爱康医疗", market: "香港市场", currency: "HKD" },
+  "ak medical holdings": { code: "01789", name: "爱康医疗", market: "香港市场", currency: "HKD" },
+  tencent: { code: "00700", name: "腾讯控股", market: "香港市场", currency: "HKD" },
+  "tencent holdings": { code: "00700", name: "腾讯控股", market: "香港市场", currency: "HKD" },
   英伟达: { code: "NVDA", name: "英伟达", market: "美国市场", currency: "USD" },
   辉达: { code: "NVDA", name: "英伟达", market: "美国市场", currency: "USD" },
+  中海物业: { code: "02669", name: "中海物业", market: "香港市场", currency: "HKD" },
+  中国海外物业: { code: "02669", name: "中海物业", market: "香港市场", currency: "HKD" },
+  爱康医疗: { code: "01789", name: "爱康医疗", market: "香港市场", currency: "HKD" },
+  爱康医疗控股: { code: "01789", name: "爱康医疗", market: "香港市场", currency: "HKD" },
+  洛克希德马丁: { code: "LMT", name: "洛克希德马丁", market: "美国市场", currency: "USD" },
+  "洛克希德 马丁": { code: "LMT", name: "洛克希德马丁", market: "美国市场", currency: "USD" },
+  阿斯麦: { code: "ASML", name: "阿斯麦", market: "美国市场", currency: "USD" },
+  阿斯麦控股: { code: "ASML", name: "阿斯麦", market: "美国市场", currency: "USD" },
+  英特尔: { code: "INTC", name: "英特尔", market: "美国市场", currency: "USD" },
+  英特尔公司: { code: "INTC", name: "英特尔", market: "美国市场", currency: "USD" },
+  腾讯控股: { code: "00700", name: "腾讯控股", market: "香港市场", currency: "HKD" },
   拼多多: { code: "PDD", name: "拼多多", market: "美国市场", currency: "USD" },
   台积电: { code: "TSM", name: "台积电", market: "美国市场", currency: "USD" },
   阿里巴巴: { code: "BABA", name: "阿里巴巴", market: "美国市场", currency: "USD" },
@@ -338,6 +355,17 @@ function canonicalText(value: string) {
   return value
     .normalize("NFKC")
     .replaceAll("⻓", "长")
+    .replaceAll("⻢", "马")
+    .replaceAll("⾺", "马")
+    .replaceAll("馬", "马")
+    .replaceAll("⻨", "麦")
+    .replaceAll("⿆", "麦")
+    .replaceAll("麥", "麦")
+    .replaceAll("愛", "爱")
+    .replaceAll("醫", "医")
+    .replaceAll("療", "疗")
+    .replaceAll("騰", "腾")
+    .replaceAll("訊", "讯")
     .replaceAll("長", "长")
     .replaceAll("橋", "桥")
     .replaceAll("證", "证")
@@ -1418,6 +1446,124 @@ function formatQuantity(value: number) {
   return value.toLocaleString("en-US", { maximumFractionDigits: 8 });
 }
 
+function securityPositionKey(currency: Currency, code: string) {
+  return `${currency}::${normalizeCode(code)}`;
+}
+
+function isSameSecurity(position: PortfolioRecord, trade: StockTradeRecord) {
+  return securityPositionKey(position.currency, position.code) === securityPositionKey(trade.currency, trade.code);
+}
+
+function normalizedStatementMonth(value: string) {
+  const date = normalizeDate(value);
+  return date.length >= 7 ? date.slice(0, 7) : "";
+}
+
+function compareStockTrades(a: StockTradeRecord, b: StockTradeRecord) {
+  return (
+    normalizeDate(a.tradeDate).localeCompare(normalizeDate(b.tradeDate)) ||
+    (a.tradeTime ?? "99:99:99").localeCompare(b.tradeTime ?? "99:99:99") ||
+    a.sequence - b.sequence
+  );
+}
+
+function fallbackOpeningCost(position: PortfolioRecord) {
+  if (!Number.isFinite(position.avgCost) || position.avgCost <= 0) return null;
+  return position.beginQty * position.avgCost;
+}
+
+function deriveOpeningCostFromStatement(raw: LongbridgeRawData, position: PortfolioRecord) {
+  const fallback = fallbackOpeningCost(position);
+  const statementMonth = portfolioStatementMonth(position);
+  if (!statementMonth || position.beginQty <= 0) return fallback;
+  if (!Number.isFinite(position.avgCost) || position.avgCost <= 0 || position.endQty <= 0) return fallback;
+
+  const monthTrades = raw.trades
+    .filter((trade) => isSameSecurity(position, trade) && normalizedStatementMonth(trade.tradeDate) === statementMonth)
+    .sort(compareStockTrades);
+
+  if (monthTrades.length === 0) return position.endQty > 0 ? position.endQty * position.avgCost : fallback;
+
+  let quantity = position.beginQty;
+  let openingCostFactor = 1;
+  let fixedCost = 0;
+
+  for (const trade of monthTrades) {
+    if (isBuySide(trade.side)) {
+      quantity += trade.quantity;
+      fixedCost += Math.abs(trade.cashChange);
+      continue;
+    }
+
+    if (!isSellSide(trade.side)) continue;
+    if (quantity <= 1e-8 || trade.quantity > quantity + 1e-7) return fallback;
+
+    const remainingRatio = Math.max(0, (quantity - trade.quantity) / quantity);
+    openingCostFactor *= remainingRatio;
+    fixedCost *= remainingRatio;
+    quantity -= trade.quantity;
+  }
+
+  if (Math.abs(quantity - position.endQty) > Math.max(1e-6, Math.abs(position.endQty) * 1e-6)) return fallback;
+  if (Math.abs(openingCostFactor) < 1e-9) return fallback;
+
+  const targetEndingCost = position.endQty * position.avgCost;
+  const openingCost = (targetEndingCost - fixedCost) / openingCostFactor;
+  return Number.isFinite(openingCost) && openingCost > 0 ? openingCost : fallback;
+}
+
+function buildOpeningPositionEvents(raw: LongbridgeRawData, startSequence: number) {
+  const sellKeys = new Set(raw.trades.filter((trade) => isSellSide(trade.side)).map((trade) => securityPositionKey(trade.currency, trade.code)));
+  const earliestPositions = new Map<string, PortfolioRecord>();
+
+  for (const position of raw.positions) {
+    if (position.beginQty <= 0 || !sellKeys.has(securityPositionKey(position.currency, position.code))) continue;
+    const key = securityPositionKey(position.currency, position.code);
+    const existing = earliestPositions.get(key);
+    if (!existing || portfolioStatementMonth(position) < portfolioStatementMonth(existing)) {
+      earliestPositions.set(key, position);
+    }
+  }
+
+  const events: EventRecord[] = [];
+  const issues: ReviewIssue[] = [];
+  let sequence = startSequence;
+  let estimatedCount = 0;
+
+  for (const position of earliestPositions.values()) {
+    const cost = deriveOpeningCostFromStatement(raw, position);
+    if (cost === null || cost <= 0) continue;
+    const statementMonth = portfolioStatementMonth(position);
+    events.push({
+      kind: "transfer_in",
+      date: `${statementMonth || "2000-01"}-01`,
+      rank: 1,
+      sequence,
+      market: position.market,
+      currency: position.currency,
+      code: position.code,
+      name: position.name,
+      quantity: position.beginQty,
+      cost,
+      source: "月初持仓成本带入",
+      note: `按长桥最早月结单期初持仓和月末成本倒推/暂估；正式申报建议用原始买入或转仓凭证复核。`,
+    });
+    sequence += 1;
+    estimatedCount += 1;
+  }
+
+  if (estimatedCount > 0) {
+    issues.push({
+      id: "longbridge-opening-cost-estimated",
+      severity: "warning",
+      title: "长桥月初持仓成本按月结单暂估",
+      detail: `已为 ${estimatedCount} 个发生卖出的期初持仓带入成本。成本按最早上传月结单的期初数量和月末成本倒推/暂估；正式申报建议用原始买入记录或转仓凭证复核。`,
+    });
+  }
+
+  return { events, issues, nextSequence: sequence };
+}
+
 function isStockSplitMove(move: PositionMoveRecord) {
   const moveType = canonicalText(move.moveType);
   const note = canonicalText(move.note).toLowerCase();
@@ -1634,6 +1780,11 @@ function buildRealizedTrades(
 
   const events: EventRecord[] = [];
   let sequence = 0;
+
+  const openingEvents = buildOpeningPositionEvents(raw, sequence);
+  events.push(...openingEvents.events);
+  issues.push(...openingEvents.issues);
+  sequence = openingEvents.nextSequence;
 
   const stockSplitEvents = buildStockSplitEvents(raw, sequence);
   events.push(...stockSplitEvents.events);

@@ -129,6 +129,7 @@ export interface ReviewIssue {
   title: string;
   detail: string;
   source?: string;
+  taxYear?: number;
 }
 
 export interface CostBasisRequest {

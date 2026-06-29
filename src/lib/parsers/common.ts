@@ -27,9 +27,15 @@ export function asNumber(value: unknown): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+const SECURITY_SYMBOL_ALIASES: Record<string, string> = {
+  // DiDi traded as DIDI on NYSE, then as DIDIY after moving to OTC.
+  DIDIY: "DIDI",
+};
+
 export function normalizeSymbol(value: unknown) {
   const text = String(value ?? "").trim().toUpperCase();
-  return /^\d+$/.test(text) ? text.padStart(5, "0") : text;
+  const normalized = /^\d+$/.test(text) ? text.padStart(5, "0") : text;
+  return SECURITY_SYMBOL_ALIASES[normalized] ?? normalized;
 }
 
 export function sourceId(fileName: string, row: number) {

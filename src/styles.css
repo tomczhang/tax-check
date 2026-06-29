@@ -714,6 +714,75 @@ button {
 .filelist {
   list-style: none;
   margin: 14px -4px 0;
+  display: grid;
+  gap: 8px;
+}
+
+.file-year-group {
+  list-style: none;
+}
+
+.file-year-toggle {
+  width: 100%;
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--fg);
+  transition:
+    background 0.14s,
+    border-color 0.14s;
+}
+
+.file-year-toggle:hover {
+  border-color: var(--border-2);
+  background: var(--surface);
+}
+
+.file-year-caret {
+  width: 13px;
+  height: 13px;
+  flex: none;
+  color: var(--faint);
+  transition: transform 0.16s;
+}
+
+.file-year-toggle.open .file-year-caret {
+  transform: rotate(90deg);
+  color: var(--accent);
+}
+
+.file-year-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.file-year-count {
+  margin-left: auto;
+  flex: none;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.file-year-files {
+  list-style: none;
+  margin: 5px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
 }
 
 .file {

@@ -34,8 +34,11 @@ function filterByTaxYear(input: ParsedInput, taxYear: number): ParsedInput {
   const prefix = String(taxYear);
   return {
     ...input,
+    realizedTrades: input.realizedTrades.filter((trade) => trade.sellDate.startsWith(prefix)),
     dividends: input.dividends.filter((dividend) => dividend.date.startsWith(prefix)),
-    openPositions: input.openPositions,
+    openPositions: input.openPositions.filter((position) => !position.asOf || position.asOf.startsWith(prefix)),
+    issues: input.issues.filter((issue) => issue.taxYear === undefined || issue.taxYear === taxYear),
+    costBasisRequests: input.costBasisRequests.filter((request) => request.sellDate.startsWith(prefix)),
     taxStatementSummaries: input.taxStatementSummaries.filter((summary) => {
       const startYear = Number(String(summary.periodStart ?? "").slice(0, 4));
       const endYear = Number(String(summary.periodEnd ?? "").slice(0, 4));
