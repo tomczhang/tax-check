@@ -349,7 +349,7 @@ function tradeActivitiesFromAnalysis(analysis) {
 }
 
 function isTransferActivity(activity) {
-  return ["acquire", "transfer_in", "transfer_out"].includes(activity.side);
+  return ["acquire", "transfer_in", "transfer_out", "stock_split"].includes(activity.side);
 }
 
 function activitySideLabel(activity) {
@@ -358,6 +358,7 @@ function activitySideLabel(activity) {
   if (activity.side === "short_open") return "卖出开仓";
   if (activity.side === "short_close") return "买入平仓";
   if (activity.side === "transfer_out") return "转出";
+  if (activity.side === "stock_split") return "拆合股";
   return "转入";
 }
 
@@ -398,6 +399,7 @@ function compareFlowsByDate(a, b) {
 }
 
 function transferSideLabel(activity) {
+  if (activity.side === "stock_split") return "拆合股";
   if (activity.side === "transfer_out") return "转出";
   if (activity.side === "transfer_in") return "转入";
   if (String(activity.note ?? "").includes("IPO")) return "IPO中签";

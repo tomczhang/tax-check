@@ -192,6 +192,7 @@ function sortActivities(activities: TradeActivity[]) {
   const rank: Record<TradeActivity["side"], number> = {
     acquire: 1,
     transfer_in: 1,
+    stock_split: 1.5,
     buy: 2,
     short_open: 2,
     short_close: 2,
@@ -348,6 +349,14 @@ function consumeShortFifo(state: ReplayState, quantity: number) {
   return proceeds;
 }
 
+function applyStockSplit(state: ReplayState, ratio: number) {
+  if (!Number.isFinite(ratio) || ratio <= 0) return;
+  state.quantity *= ratio;
+  state.lots = state.lots.map((lot) => ({ ...lot, quantity: lot.quantity * ratio }));
+  state.shortQuantity *= ratio;
+  state.shortLots = state.shortLots.map((lot) => ({ ...lot, quantity: lot.quantity * ratio }));
+}
+
 function quantityMatches(left: number, right: number) {
   return Math.abs(left - right) <= Math.max(1e-7, Math.abs(right) * 1e-7);
 }
@@ -385,7 +394,45 @@ function replayScenario(
     state.currency = activity.currency || state.currency;
     state.securityName = activity.securityName || state.securityName;
 
-    if (activity.side === "buy" || activity.side === "acquire" || activity.side === "transfer_in") {
+    if (activity.side === "stock_split") {
+      applyStockSplit(state, activity.splitRatio ?? 0);
+      const creditedQuantity = activity.splitToQuantity;
+      const fractionalQuantity =
+        Number.isFinite(creditedQuantity) && creditedQuantity !== undefined
+          ? Math.max(0, state.quantity - creditedQuantity)
+          : 0;
+      const cashInLieu = activity.cashInLieu ?? 0;
+      if (fractionalQuantity > 1e-8 && cashInLieu > 0 && state.quantity + 1e-7 >= fractionalQuantity) {
+        const costBasis =
+          costBasisMethod === "fifo" ? consumeFifo(state, fractionalQuantity) : consumeAcb(state, fractionalQuantity);
+        if (inWindow(activity.date, window)) {
+          trades.push({
+            id: `${activity.id}-${window.mode}-${costBasisMethod}-cash-in-lieu`,
+            broker: activity.broker,
+            sellDate: activity.date,
+            time: activity.time,
+            sequence: activity.sequence,
+            market: activity.market,
+            currency: activity.currency,
+            symbol: activity.symbol,
+            securityName: activity.securityName,
+            quantity: fractionalQuantity,
+            proceeds: cashInLieu,
+            costBasis,
+            gainLoss: cashInLieu - costBasis,
+            source: activity.source,
+            note: `${activity.note ? `${activity.note}；` : ""}拆合股碎股现金结算。`,
+          });
+        }
+      }
+      if (
+        Number.isFinite(creditedQuantity) &&
+        creditedQuantity !== undefined &&
+        Math.abs(state.quantity - creditedQuantity) <= 1e-6
+      ) {
+        state.quantity = creditedQuantity;
+      }
+    } else if (activity.side === "buy" || activity.side === "acquire" || activity.side === "transfer_in") {
       addCost(state, activity.quantity, activity.amount);
     } else if (activity.side === "short_open") {
       addShortProceeds(state, activity.quantity, activity.amount);

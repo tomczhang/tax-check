@@ -242,6 +242,23 @@ type EventRecord =
       quantity: number;
       source: string;
       note: string;
+    }
+  | {
+      kind: "stock_split";
+      date: string;
+      rank: number;
+      sequence: number;
+      market: string;
+      currency: Currency;
+      code: string;
+      name: string;
+      quantity: number;
+      splitRatio: number;
+      splitFromQuantity: number;
+      splitToQuantity: number;
+      cashInLieu?: number;
+      source: string;
+      note: string;
     };
 
 const DATE_RE = /^20\d{2}\.\d{2}\.\d{2}$/;
@@ -1040,7 +1057,7 @@ function parseLongbridgeLines(
   const fallbackSecurityNames = new Map<string, string>();
   const documentSecurityAliases = manualSecurityAliasMap(manualAliases);
   let lastTradeForTime: StockTradeRecord | null = null;
-  let expectingTradeTime = false;
+  let readingTradeTimes = false;
 
   for (const line of lines) {
     const text = canonicalText(line.text);
@@ -1051,18 +1068,23 @@ function parseLongbridgeLines(
     if (statementMonthMatch) {
       statementMonth = `${statementMonthMatch[1]}-${statementMonthMatch[2]}`;
     }
-    if (/^Order Time\s+Transaction Time\s+Quantity\s+Price$/i.test(text)) {
-      expectingTradeTime = true;
+    if (
+      /^Order Time\s+Transaction Time\s+Quantity\s+Price$/i.test(text) ||
+      (text.includes("下单时间") && text.includes("成交时间") && text.includes("数量") && text.includes("平均价格"))
+    ) {
+      readingTradeTimes = true;
       continue;
     }
-    if (expectingTradeTime) {
+    if (readingTradeTimes) {
       const tradeTimeMatch = text.match(/^\d{2}:\d{2}:\d{2}\s+\S+\s+(\d{2}:\d{2}:\d{2})\s+\S+/);
       if (tradeTimeMatch && lastTradeForTime) {
-        lastTradeForTime.tradeTime = tradeTimeMatch[1];
-        expectingTradeTime = false;
+        lastTradeForTime.tradeTime =
+          lastTradeForTime.tradeTime && lastTradeForTime.tradeTime < tradeTimeMatch[1]
+            ? lastTradeForTime.tradeTime
+            : tradeTimeMatch[1];
         continue;
       }
-      expectingTradeTime = false;
+      readingTradeTimes = false;
     }
     if (text.includes("项目") && text.includes("期初持仓") && text.includes("浮动盈亏")) {
       activeTable = "portfolio";
@@ -1388,9 +1410,167 @@ function manualCostMap(manualCosts: ManualCostInput[] = []) {
   return costs;
 }
 
+function stockSplitActionLabel(ratio: number) {
+  return ratio >= 1 ? "拆股" : "合股";
+}
+
+function formatQuantity(value: number) {
+  return value.toLocaleString("en-US", { maximumFractionDigits: 8 });
+}
+
+function isStockSplitMove(move: PositionMoveRecord) {
+  const moveType = canonicalText(move.moveType);
+  const note = canonicalText(move.note).toLowerCase();
+  return moveType.includes("公司行动") && moveType.includes("股票") && note.includes("stock split");
+}
+
+function stockSplitMoveKey(move: PositionMoveRecord) {
+  return [
+    move.sourcePdf,
+    move.date,
+    normalizeCode(move.code),
+    canonicalText(move.note).toLowerCase().replace(/\s+/g, " "),
+  ].join("::");
+}
+
+function stockSplitRatioFromNote(note: string) {
+  const match = canonicalText(note).match(/Stock Split Amount:\s*([\d.]+)\s*for\s*([\d.]+)/i);
+  if (!match) return null;
+  const numerator = Number(match[1]);
+  const denominator = Number(match[2]);
+  if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || numerator <= 0 || denominator <= 0) return null;
+  return numerator / denominator;
+}
+
+function stockSplitSymbolFromNote(note: string) {
+  const text = canonicalText(note).toUpperCase();
+  const equityMatch = text.match(/\b([A-Z]{1,6})\s+US\s+EQUITY\b/);
+  if (equityMatch) return normalizeCode(equityMatch[1]);
+  const dottedMatch = text.match(/\b([A-Z]{1,6})\.US\b/);
+  if (dottedMatch) return normalizeCode(dottedMatch[1]);
+  return null;
+}
+
+function stockSplitCashForMove(cashFlows: CashFlowRecord[], move: PositionMoveRecord) {
+  const code = normalizeCode(move.code);
+  const moveDate = normalizeDate(move.date);
+  return cashFlows
+    .filter((cashFlow) => {
+      const note = canonicalText(cashFlow.note).toLowerCase();
+      return (
+        cashFlow.amount > 0 &&
+        normalizeDate(cashFlow.date) >= moveDate &&
+        note.includes("stock split") &&
+        stockSplitSymbolFromNote(cashFlow.note) === code
+      );
+    })
+    .sort((a, b) => normalizeDate(a.date).localeCompare(normalizeDate(b.date)))[0];
+}
+
+function inferStockSplitEffectiveDate(raw: LongbridgeRawData, move: PositionMoveRecord, ratio: number) {
+  const moveDate = normalizeDate(move.date);
+  const code = normalizeCode(move.code);
+  const expectedPriceRatio = ratio > 0 ? 1 / ratio : 0;
+  if (!Number.isFinite(expectedPriceRatio) || expectedPriceRatio <= 0) return moveDate;
+
+  const sameSymbolTrades = raw.trades
+    .filter((trade) => normalizeCode(trade.code) === code && normalizeDate(trade.tradeDate) <= moveDate)
+    .sort((a, b) => {
+      return (
+        normalizeDate(a.tradeDate).localeCompare(normalizeDate(b.tradeDate)) ||
+        (a.tradeTime ?? "99:99:99").localeCompare(b.tradeTime ?? "99:99:99") ||
+        a.sequence - b.sequence
+      );
+    });
+
+  let previous: StockTradeRecord | null = null;
+  for (const trade of sameSymbolTrades) {
+    if (previous && previous.avgPrice > 0 && trade.avgPrice > 0) {
+      const actualPriceRatio = trade.avgPrice / previous.avgPrice;
+      const threshold = Math.sqrt(expectedPriceRatio);
+      if (expectedPriceRatio >= 2 && actualPriceRatio >= threshold) return normalizeDate(trade.tradeDate);
+      if (expectedPriceRatio <= 0.5 && actualPriceRatio <= threshold) return normalizeDate(trade.tradeDate);
+    }
+    previous = trade;
+  }
+
+  return moveDate;
+}
+
+function buildStockSplitEvents(raw: LongbridgeRawData, startSequence: number) {
+  const groups = new Map<string, PositionMoveRecord[]>();
+  for (const move of raw.moves) {
+    if (!isStockSplitMove(move)) continue;
+    const group = groups.get(stockSplitMoveKey(move)) ?? [];
+    group.push(move);
+    groups.set(stockSplitMoveKey(move), group);
+  }
+
+  const events: EventRecord[] = [];
+  const issues: ReviewIssue[] = [];
+  const consumed = new Set<PositionMoveRecord>();
+  let sequence = startSequence;
+
+  for (const moves of groups.values()) {
+    const outMove = moves.find((move) => move.quantity < 0 || canonicalText(move.moveType).includes("出账"));
+    const inMove = moves.find((move) => move.quantity > 0 || canonicalText(move.moveType).includes("进账"));
+    if (!outMove || !inMove) continue;
+
+    consumed.add(outMove);
+    consumed.add(inMove);
+
+    const splitFromQuantity = Math.abs(outMove.quantity);
+    const splitToQuantity = Math.abs(inMove.quantity);
+    if (splitFromQuantity <= 0 || splitToQuantity <= 0) continue;
+
+    const inferred = inferTradeMarket(inMove.code, {
+      code: inMove.code,
+      name: inMove.name,
+      codeResolution: "explicit",
+    });
+    const splitRatio = stockSplitRatioFromNote(inMove.note || outMove.note) ?? splitToQuantity / splitFromQuantity;
+    const cashFlow = stockSplitCashForMove(raw.cashFlows, inMove);
+    const actionLabel = stockSplitActionLabel(splitRatio);
+
+    events.push({
+      kind: "stock_split",
+      date: inferStockSplitEffectiveDate(raw, inMove, splitRatio),
+      rank: 1.5,
+      sequence,
+      market: inMove.market || outMove.market || inferred.market,
+      currency: inferred.currency,
+      code: inMove.code,
+      name: inMove.name,
+      quantity: splitToQuantity,
+      splitRatio,
+      splitFromQuantity,
+      splitToQuantity,
+      cashInLieu: cashFlow?.amount,
+      source: "公司行动股票出入账",
+      note: `${actionLabel}：${formatQuantity(splitFromQuantity)} 股 -> ${formatQuantity(splitToQuantity)} 股${
+        cashFlow ? `；碎股现金 ${inferred.currency} ${formatQuantity(cashFlow.amount)}` : ""
+      }；${inMove.note || outMove.note}`,
+    });
+    issues.push({
+      id: `${inMove.sourcePdf}-${inMove.code}-${inMove.date}-stock-split`,
+      severity: "info",
+      title: `${displayCode(inMove.code)} 已识别${actionLabel}`,
+      detail: `已按公司行动将 ${formatQuantity(splitFromQuantity)} 股折算为 ${formatQuantity(splitToQuantity)} 股，并保留原持仓总成本。${
+        cashFlow
+          ? `检测到碎股现金 ${inferred.currency} ${formatQuantity(cashFlow.amount)}；当拆合股前持仓成本可追踪时，系统会按碎股处置收入参与成本重放。`
+          : ""
+      }`,
+      source: inMove.sourcePdf,
+    });
+    sequence += 1;
+  }
+
+  return { events, issues, consumed, nextSequence: sequence };
+}
+
 function activityAmount(event: EventRecord) {
   if ("cash" in event) return event.kind === "buy" ? -event.cash : event.cash;
-  if (event.kind === "transfer_out") return 0;
+  if (event.kind === "transfer_out" || event.kind === "stock_split") return 0;
   return event.cost;
 }
 
@@ -1411,6 +1591,10 @@ function buildTradeActivities(events: EventRecord[]): TradeActivity[] {
     grossAmount: "grossAmount" in event ? event.grossAmount : undefined,
     fee: "fee" in event ? event.fee : undefined,
     amount: activityAmount(event),
+    splitRatio: "splitRatio" in event ? event.splitRatio : undefined,
+    splitFromQuantity: "splitFromQuantity" in event ? event.splitFromQuantity : undefined,
+    splitToQuantity: "splitToQuantity" in event ? event.splitToQuantity : undefined,
+    cashInLieu: "cashInLieu" in event ? event.cashInLieu : undefined,
     source: event.source,
     note: event.note,
   }));
@@ -1451,7 +1635,13 @@ function buildRealizedTrades(
   const events: EventRecord[] = [];
   let sequence = 0;
 
+  const stockSplitEvents = buildStockSplitEvents(raw, sequence);
+  events.push(...stockSplitEvents.events);
+  issues.push(...stockSplitEvents.issues);
+  sequence = stockSplitEvents.nextSequence;
+
   for (const move of raw.moves) {
+    if (stockSplitEvents.consumed.has(move)) continue;
     const moveType = canonicalText(move.moveType);
     if (moveType.includes("中签")) {
       events.push({
@@ -1568,7 +1758,36 @@ function buildRealizedTrades(
     state.currency = event.currency || state.currency;
     state.name = event.name || state.name;
 
-    if (event.kind === "acquire" || event.kind === "transfer_in") {
+    if (event.kind === "stock_split") {
+      state.quantity *= event.splitRatio;
+      const fractionalQuantity = Math.max(0, state.quantity - event.splitToQuantity);
+      if (fractionalQuantity > 1e-8 && event.cashInLieu && event.cashInLieu > 0) {
+        const costBasis = fractionalQuantity * stateAvgCost(state);
+        if (targetYear === undefined || event.date.startsWith(String(targetYear))) {
+          realizedTrades.push({
+            id: `longbridge-${event.date}-${event.sequence}-${event.code}-stock-split-cash-in-lieu`,
+            broker: "长桥",
+            sellDate: event.date,
+            sequence: event.sequence,
+            market: event.market,
+            currency: event.currency,
+            symbol: displayCode(event.code),
+            securityName: event.name,
+            quantity: fractionalQuantity,
+            proceeds: event.cashInLieu,
+            costBasis,
+            gainLoss: event.cashInLieu - costBasis,
+            source: event.source,
+            note: `${event.note}；拆合股碎股现金结算。`,
+          });
+        }
+        state.quantity -= fractionalQuantity;
+        state.costBasis -= costBasis;
+      }
+      if (Math.abs(state.quantity - event.splitToQuantity) <= 1e-6) {
+        state.quantity = event.splitToQuantity;
+      }
+    } else if (event.kind === "acquire" || event.kind === "transfer_in") {
       state.quantity += event.quantity;
       state.costBasis += event.cost;
     } else if (event.kind === "buy") {

@@ -46,7 +46,8 @@ export type TradeActivitySide =
   | "short_close"
   | "acquire"
   | "transfer_in"
-  | "transfer_out";
+  | "transfer_out"
+  | "stock_split";
 
 export interface TradeActivity {
   id: string;
@@ -64,6 +65,10 @@ export interface TradeActivity {
   grossAmount?: number;
   fee?: number;
   amount: number;
+  splitRatio?: number;
+  splitFromQuantity?: number;
+  splitToQuantity?: number;
+  cashInLieu?: number;
   source: string;
   note?: string;
   excludedFromTaxReplay?: boolean;
