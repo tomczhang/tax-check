@@ -41,6 +41,7 @@ export interface RealizedTrade {
 
 export type TradeActivitySide =
   | "buy"
+  | "long_open"
   | "sell"
   | "short_open"
   | "short_close"

@@ -209,6 +209,7 @@ function sortActivities(activities: TradeActivity[]) {
     transfer_in: 1,
     stock_split: 1.5,
     buy: 2,
+    long_open: 2,
     short_open: 2,
     short_close: 2,
     sell: 2,
@@ -392,7 +393,7 @@ function activityUsageKey(activity: TradeActivity) {
 }
 
 function explicitActivityBuyCostBasis(activity: TradeActivity) {
-  if (activity.side !== "buy") return null;
+  if (activity.side !== "buy" && activity.side !== "long_open") return null;
   if (activity.quantity <= 1e-8) return null;
 
   const amount = Number(activity.amount);
@@ -538,7 +539,7 @@ function replayScenario(
       ) {
         state.quantity = creditedQuantity;
       }
-    } else if (activity.side === "buy") {
+    } else if (activity.side === "buy" || activity.side === "long_open") {
       const usedByEarlierSell = futureBuyUsages.get(activityUsageKey(activity)) ?? { quantity: 0, costBasis: 0 };
       const explicitCostBasis = explicitActivityBuyCostBasis(activity) ?? activity.amount;
       const remainingQuantity = Math.max(0, activity.quantity - usedByEarlierSell.quantity);

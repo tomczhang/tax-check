@@ -308,6 +308,42 @@ function rowNeedsCost(row) {
   return !rowHasRmbPnl(row);
 }
 
+function positionCostCorrectionKey(position) {
+  const fallback = [
+    position?.broker,
+    position?.asOf,
+    position?.currency,
+    position?.symbol ?? position?.code,
+    position?.quantity ?? position?.qty,
+    position?.source,
+  ]
+    .filter((part) => part !== undefined && part !== null && part !== "")
+    .join("::");
+  return `position-cost::${position?.id || fallback}`;
+}
+
+function roundDisplayMoney(value) {
+  return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+function applyPositionCostCorrections(openPositions = [], costCorrections = {}) {
+  return (openPositions ?? []).map((position) => {
+    const correctionKey = positionCostCorrectionKey(position);
+    const costBasis = parseManualCostValue(costCorrections[correctionKey]);
+    if (costBasis === null) return position;
+
+    const marketValue = Number(position.marketValue);
+    const unrealizedGainLoss = Number.isFinite(marketValue) ? roundDisplayMoney(marketValue - costBasis) : position.unrealizedGainLoss;
+    return {
+      ...position,
+      costBasis: roundDisplayMoney(costBasis),
+      unrealizedGainLoss,
+      costCorrected: true,
+      note: `${position.note ? `${position.note}；` : ""}用户手动补录期末持仓成本：${roundDisplayMoney(costBasis)}`,
+    };
+  });
+}
+
 function positionOnlyOriginalPnlLabel(row) {
   if (Number.isFinite(row?.pnlOriginal)) return floatingPnlLabel(row.pnlOriginal);
   if (Number.isFinite(row?.proceeds)) return `市值 ${fmt(row.proceeds)}`;
@@ -389,7 +425,7 @@ function securityAliasInputsFromState(securityAliases) {
     .filter((item) => item.name && item.symbol);
 }
 
-function rowsFromAnalysis(analysis) {
+function rowsFromAnalysis(analysis, costCorrections = {}) {
   if (!analysis) return [];
   const rowMap = new Map();
   const rowKeyFor = (currency, symbol) => `${currency}::${symbolForSecurityMatch(symbol) || normalizeSecuritySymbolInput(symbol)}`;
@@ -454,7 +490,7 @@ function rowsFromAnalysis(analysis) {
   }
 
   const positionMap = new Map();
-  for (const position of analysis.openPositions ?? []) {
+  for (const position of applyPositionCostCorrections(analysis.openPositions ?? [], costCorrections)) {
     const baseKey = rowKeyFor(position.currency, position.symbol);
     const existing =
       positionMap.get(baseKey) ??
@@ -564,6 +600,7 @@ function isTransferActivity(activity) {
 }
 
 function activitySideLabel(activity) {
+  if (activity.side === "long_open") return "买入开仓";
   if (activity.side === "sell") return "卖出";
   if (activity.side === "buy") return "买入";
   if (activity.side === "short_open") return "卖出开仓";
@@ -574,7 +611,7 @@ function activitySideLabel(activity) {
 }
 
 function isBuyLikeActivity(activity) {
-  return ["buy", "acquire", "transfer_in", "short_close"].includes(activity.side);
+  return ["buy", "long_open", "acquire", "transfer_in", "short_close"].includes(activity.side);
 }
 
 function activitySideFilterValue(activity) {
@@ -591,6 +628,7 @@ function flowReplayRank(side) {
     transfer_in: 1,
     stock_split: 1.5,
     buy: 2,
+    long_open: 2,
     short_open: 2,
     short_close: 2,
     sell: 2,
@@ -632,6 +670,25 @@ function flowRealizedTradeSignature({ broker, date, sellDate, time, sequence, cu
     symbol ?? "",
     flowTradeMatchQuantity(quantity),
   ].join("::");
+}
+
+function flowMissingCostRequestSignature({ broker, date, sellDate, sequence, currency, symbol, quantity }) {
+  return [
+    broker ?? "",
+    sellDate ?? date ?? "",
+    sequence ?? "",
+    currency ?? "",
+    symbol ?? "",
+    flowTradeMatchQuantity(quantity),
+  ].join("::");
+}
+
+function buildMissingCostRequestLookup(requests = []) {
+  const bySignature = new Map();
+  for (const request of requests ?? []) {
+    bySignature.set(flowMissingCostRequestSignature(request), request);
+  }
+  return bySignature;
 }
 
 function isFlowTradeRealizedSide(side) {
@@ -783,7 +840,7 @@ function buildFlowPositionSnapshots(activities = []) {
 
     if (activity.side === "stock_split") {
       applyFlowStockSplit(state, activity);
-    } else if (["buy", "acquire", "transfer_in"].includes(activity.side)) {
+    } else if (["buy", "long_open", "acquire", "transfer_in"].includes(activity.side)) {
       addLongFlowPosition(state, quantity, costAmount);
     } else if (activity.side === "sell") {
       const costBasis = consumeLongFlowPosition(state, quantity);
@@ -871,7 +928,7 @@ function buildOpenPositionRows(openPositions = [], fx = FX) {
     const hasCostBasis = Number.isFinite(item.costBasis);
     const hasUnrealized = Number.isFinite(item.unrealizedGainLoss);
     const costBasis = hasCostBasis ? item.costBasis : hasUnrealized ? item.marketValue - item.unrealizedGainLoss : null;
-    const costStatus = hasCostBasis ? "reported" : hasUnrealized ? "derived" : "missing";
+    const costStatus = item.costCorrected ? "corrected" : hasCostBasis ? "reported" : hasUnrealized ? "derived" : "missing";
     const last = item.quantity ? item.marketValue / item.quantity : 0;
     const cost = item.quantity && costBasis !== null ? costBasis / item.quantity : null;
     const unrealized = hasUnrealized ? item.unrealizedGainLoss : costBasis !== null ? item.marketValue - costBasis : null;
@@ -891,6 +948,8 @@ function buildOpenPositionRows(openPositions = [], fx = FX) {
       cost,
       costBasis,
       costStatus,
+      costCorrected: Boolean(item.costCorrected),
+      costCorrectionKey: positionCostCorrectionKey(item),
       last,
       unrealized,
       rmb,
@@ -905,6 +964,13 @@ function buildOpenPositionRows(openPositions = [], fx = FX) {
 }
 
 function positionCostRecordStatus(position) {
+  if (position.costStatus === "corrected") {
+    return {
+      label: "成本已补",
+      className: "review",
+      detail: "这条期末持仓成本由用户手动补录，仅用于核对浮动盈亏和后续成本线索，不参与本期已实现盈亏计算。",
+    };
+  }
   if (position.costStatus === "missing") {
     return {
       label: "需补成本",
@@ -1220,8 +1286,20 @@ function costCorrectionInputsFromState(costCorrections) {
     .filter((item) => item.costBasis !== null);
 }
 
+const PASSWORD_REQUIRED_PDF_BROKERS = new Set(["longbridge", "panda", "zircon"]);
+
+function hasPendingBrokerDetection(files) {
+  return files.some((file) => file.file && file.brokerConfidence === "pending" && /\.pdf$/i.test(file.name));
+}
+
 function needsBrokerPdfPassword(files) {
-  return files.some((file) => file.file && ["longbridge", "panda", "zircon"].includes(file.broker) && /\.pdf$/i.test(file.name));
+  return files.some(
+    (file) =>
+      file.file &&
+      file.brokerConfidence !== "pending" &&
+      PASSWORD_REQUIRED_PDF_BROKERS.has(file.broker) &&
+      /\.pdf$/i.test(file.name),
+  );
 }
 
 function detectMobileDevice() {
@@ -2381,6 +2459,7 @@ function PnlTable({
   onSubmitSecurityAlias,
   onSubmitCostCorrection,
   onClearCostCorrection,
+  onOpenCostRequest,
   analysisStatus,
   fx,
   tradeActivities = [],
@@ -2574,6 +2653,8 @@ function PnlTable({
                       onSubmitSecurityAlias={onSubmitSecurityAlias}
                       onSubmitCostCorrection={onSubmitCostCorrection}
                       onClearCostCorrection={onClearCostCorrection}
+                      onOpenCostRequest={onOpenCostRequest}
+                      missingCostRequests={row.missingCostRequests}
                       analysisStatus={analysisStatus}
                       fx={fx}
                     />
@@ -2693,6 +2774,8 @@ function StockFlowDetailPanel({
   realizedTrades = [],
   openPositions = [],
   costCorrections = {},
+  missingCostRequests = [],
+  onOpenCostRequest,
   onSubmitCostCorrection,
   onClearCostCorrection,
   analysisStatus,
@@ -2708,6 +2791,7 @@ function StockFlowDetailPanel({
       buildTradeFlowRows(tradeActivities, realizedTrades, costCorrections).filter((flow) => securityItemMatchesRow(flow, row)),
     [costCorrections, realizedTrades, row, tradeActivities],
   );
+  const missingCostRequestLookup = useMemo(() => buildMissingCostRequestLookup(missingCostRequests), [missingCostRequests]);
   const flows = useMemo(() => {
     const sort = parseSortValue(detailFlowSort, "date");
     return [...matchingFlows].sort((a, b) => compareFlowsBySort(a, b, sort));
@@ -2768,6 +2852,12 @@ function StockFlowDetailPanel({
             const costRecord = positionCostRecordStatus(position);
             const costGapChain = costGapTransferChainForPosition(position, chronologicalFlows);
             const costGapExplanation = costGapTransferExplanation(position, costGapChain);
+            const positionCorrectionKey = position.costCorrectionKey;
+            const positionCorrectionValue = positionCorrectionKey ? costCorrections[positionCorrectionKey] : undefined;
+            const isPositionCostCorrected = isValidManualCostValue(positionCorrectionValue);
+            const isPositionCostEditing = positionCorrectionKey && editingFlowCostKey === positionCorrectionKey;
+            const positionTotalCost = costInputToTotalCost(flowCostDraft, flowCostMode, position.qty);
+            const canSubmitPositionCost = positionTotalCost !== null && analysisStatus !== "running";
             return (
               <div key={`${position.id ?? ""}-${position.broker ?? ""}-${position.currency}-${position.code}-${position.source ?? ""}`}>
                 <div className="position-source-line">
@@ -2787,6 +2877,106 @@ function StockFlowDetailPanel({
                 </small>
                 <small className="position-cost-detail">{costRecord.detail}</small>
                 {position.note ? <small className="position-record-note">{position.note}</small> : null}
+                {isPositionCostEditing ? (
+                  <div className="position-cost-editor">
+                    <CostModeToggle
+                      className="compact"
+                      value={flowCostMode}
+                      inputValue={flowCostDraft}
+                      quantity={position.qty}
+                      onChange={(nextMode, nextValue) => {
+                        setFlowCostMode(nextMode);
+                        setFlowCostDraft(nextValue);
+                      }}
+                    />
+                    <input
+                      className="cost-edit-input"
+                      value={flowCostDraft}
+                      onChange={(event) => setFlowCostDraft(normalizeCostInput(event.target.value, flowCostMode))}
+                      onKeyDown={(event) => {
+                        if (event.key === "Escape") {
+                          setEditingFlowCostKey(null);
+                          setFlowCostDraft("");
+                        }
+                        if (event.key === "Enter" && canSubmitPositionCost && positionTotalCost !== null) {
+                          onSubmitCostCorrection?.(positionCorrectionKey, String(positionTotalCost));
+                          setEditingFlowCostKey(null);
+                          setFlowCostDraft("");
+                        }
+                      }}
+                      inputMode="decimal"
+                      aria-label={costInputLabel(position.currency, flowCostMode)}
+                      placeholder={costInputPlaceholder(flowCostMode)}
+                      autoFocus
+                    />
+                    {flowCostMode === "unit" && positionTotalCost !== null ? (
+                      <span className="cost-total-preview compact">
+                        总成本 {fmt(positionTotalCost)}
+                        <small>买入手续费需已摊入每股成本</small>
+                      </span>
+                    ) : null}
+                    <span className="cost-actions">
+                      <button
+                        className="icon-mini-btn"
+                        type="button"
+                        title="确认补录"
+                        aria-label="确认补录"
+                        disabled={!canSubmitPositionCost}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          if (!canSubmitPositionCost || positionTotalCost === null) return;
+                          onSubmitCostCorrection?.(positionCorrectionKey, String(positionTotalCost));
+                          setEditingFlowCostKey(null);
+                          setFlowCostDraft("");
+                        }}
+                      >
+                        <Check />
+                      </button>
+                      <button
+                        className="icon-mini-btn"
+                        type="button"
+                        title="取消"
+                        aria-label="取消"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setEditingFlowCostKey(null);
+                          setFlowCostDraft("");
+                        }}
+                      >
+                        <X />
+                      </button>
+                    </span>
+                  </div>
+                ) : position.costStatus === "missing" || isPositionCostCorrected ? (
+                  <div className="position-cost-actions">
+                    <button
+                      className="btn small-btn"
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setEditingFlowCostKey(positionCorrectionKey);
+                        setFlowCostMode("unit");
+                        setFlowCostDraft(totalCostToInputValue(isPositionCostCorrected ? positionCorrectionValue : position.costBasis, "unit", position.qty));
+                      }}
+                    >
+                      <Calculator /> {isPositionCostCorrected ? "修改持仓成本" : "补持仓成本"}
+                    </button>
+                    {isPositionCostCorrected ? (
+                      <button
+                        className="icon-mini-btn"
+                        type="button"
+                        title="撤销持仓成本补录"
+                        aria-label="撤销持仓成本补录"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onClearCostCorrection?.(positionCorrectionKey);
+                        }}
+                      >
+                        <RotateCcw />
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
                 {costGapChain.length ? (
                   <div className="position-cost-chain">
                     <div className="position-cost-chain-title">
@@ -2855,6 +3045,8 @@ function StockFlowDetailPanel({
           ) : (
             flows.map((flow) => {
               const correctionKey = flow.transferCostCorrectionKey ?? flow.realizedCostCorrectionKey;
+              const missingCostRequest =
+                flow.rawSide === "sell" ? missingCostRequestLookup.get(flowMissingCostRequestSignature(flow)) : null;
               const correctionKind = flow.transferCostCorrectionKey ? "transfer" : flow.realizedCostCorrectionKey ? "realized" : null;
               const correctionValue = correctionKey ? costCorrections[correctionKey] : undefined;
               const isCorrected = isValidManualCostValue(correctionValue);
@@ -2941,7 +3133,20 @@ function StockFlowDetailPanel({
                   <td className="r num muted">{flow.currentAverageCost === null ? "-" : fmtPrice(flow.currentAverageCost)}</td>
                   <td className="r num muted">{fmt(flow.fee)}</td>
                   <td className="c">
-                    {correctionKey ? (
+                    {missingCostRequest ? (
+                      <button
+                        className="btn small-btn"
+                        type="button"
+                        title="补充这笔卖出的历史成本"
+                        aria-label="补充这笔卖出的历史成本"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onOpenCostRequest?.(missingCostRequest);
+                        }}
+                      >
+                        <Calculator /> 补成本
+                      </button>
+                    ) : correctionKey ? (
                       <span className="cost-actions">
                         {isEditing ? (
                           <>
@@ -3046,6 +3251,7 @@ function PnlDetailRow({
   onSubmitSecurityAlias,
   onSubmitCostCorrection,
   onClearCostCorrection,
+  onOpenCostRequest,
   analysisStatus,
   fx,
 }) {
@@ -3142,8 +3348,10 @@ function PnlDetailRow({
               realizedTrades={realizedTrades}
               openPositions={openPositions}
               costCorrections={costCorrections}
+              missingCostRequests={row.missingCostRequests}
               onSubmitCostCorrection={onSubmitCostCorrection}
               onClearCostCorrection={onClearCostCorrection}
+              onOpenCostRequest={onOpenCostRequest}
               analysisStatus={analysisStatus}
               fx={fx}
             />
@@ -3218,8 +3426,10 @@ function PnlDetailRow({
             realizedTrades={realizedTrades}
             openPositions={openPositions}
             costCorrections={costCorrections}
+            missingCostRequests={row.missingCostRequests}
             onSubmitCostCorrection={onSubmitCostCorrection}
             onClearCostCorrection={onClearCostCorrection}
+            onOpenCostRequest={onOpenCostRequest}
             analysisStatus={analysisStatus}
             fx={fx}
           />
@@ -3566,6 +3776,7 @@ function Workbench({
   onSubmitSecurityAlias,
   onSubmitCostCorrection,
   onClearCostCorrection,
+  onOpenCostRequest,
   dividends,
   tradeActivities,
   realizedTrades,
@@ -3624,6 +3835,7 @@ function Workbench({
                 onSubmitSecurityAlias={onSubmitSecurityAlias}
                 onSubmitCostCorrection={onSubmitCostCorrection}
                 onClearCostCorrection={onClearCostCorrection}
+                onOpenCostRequest={onOpenCostRequest}
                 analysisStatus={analysisStatus}
                 fx={fx}
                 tradeActivities={tradeActivities}
@@ -4910,10 +5122,13 @@ export default function App() {
 
   const currentAnalysis = analyses?.[methodId] ?? null;
   const fx = useMemo(() => fxForTaxYear(year), [year]);
-  const rows = useMemo(() => rowsFromAnalysis(currentAnalysis), [currentAnalysis]);
+  const rows = useMemo(() => rowsFromAnalysis(currentAnalysis, costCorrections), [costCorrections, currentAnalysis]);
   const summary = useMemo(() => summaryFromAnalysis(currentAnalysis, fx), [currentAnalysis, fx]);
   const dividends = useMemo(() => dividendsFromAnalysis(currentAnalysis), [currentAnalysis]);
-  const openPositions = useMemo(() => openPositionsFromAnalysis(currentAnalysis), [currentAnalysis]);
+  const openPositions = useMemo(
+    () => applyPositionCostCorrections(openPositionsFromAnalysis(currentAnalysis), costCorrections),
+    [costCorrections, currentAnalysis],
+  );
   const tradeActivities = useMemo(() => tradeActivitiesFromAnalysis(currentAnalysis), [currentAnalysis]);
   const realizedTrades = currentAnalysis?.realizedTrades ?? [];
   const analysisIssues = useMemo(
@@ -4943,6 +5158,35 @@ export default function App() {
     }),
     [analyses, fx],
   );
+
+  useEffect(() => {
+    const passwordPromptApplies = needsBrokerPdfPassword(files) && !password.trim();
+    const detectionPending = hasPendingBrokerDetection(files);
+    setManualIssues((current) => {
+      let changed = false;
+      const next = current.filter((issue) => {
+        if (issue.id === "pdf-password-required") {
+          const keep = passwordPromptApplies;
+          changed = changed || !keep;
+          return keep;
+        }
+        if (String(issue.id ?? "").startsWith("broker-detection-pending-")) {
+          const keep = detectionPending;
+          changed = changed || !keep;
+          return keep;
+        }
+        return true;
+      });
+      return changed ? next : current;
+    });
+    if (activeIssue?.id === "pdf-password-required" && !passwordPromptApplies) {
+      setActiveIssue(null);
+    }
+    if (String(activeIssue?.id ?? "").startsWith("broker-detection-pending-") && !detectionPending) {
+      setActiveIssue(null);
+    }
+  }, [activeIssue?.id, files, password]);
+
   useEffect(() => {
     if (activeIssue || activeCostRequest || modalIssues.length === 0) return;
     setActiveIssue(modalIssues[0]);
@@ -5151,6 +5395,19 @@ export default function App() {
   }
 
   async function runAnalysis(manualCostOverrides = {}, securityAliasOverrides = {}) {
+    if (hasPendingBrokerDetection(files)) {
+      setPage("workbench");
+      setAnalysisStatus("idle");
+      pushManualIssue({
+        id: `broker-detection-pending-${Date.now()}`,
+        severity: "warning",
+        title: "券商识别还在进行",
+        detail: "部分 PDF 仍在读取内容识别券商，请等待文件列表显示具体券商后再解析。华泰月结单不需要填写这里的 PDF 密码。",
+        action: "upload",
+      });
+      return;
+    }
+
     if (needsBrokerPdfPassword(files) && !password.trim()) {
       setPage("workbench");
       setAnalysisStatus("idle");
@@ -5158,7 +5415,7 @@ export default function App() {
         id: "pdf-password-required",
         severity: "warning",
         title: "请填写 PDF 月结单密码",
-        detail: "检测到需要密码的 PDF 月结单。请在左侧「PDF 月结单密码」中填写对应券商的 PDF 密码，然后再点击解析并计算。",
+        detail: "检测到长桥、熊猫或卓锐 PDF 月结单需要密码。华泰月结单不需要填写这里的 PDF 密码；如果文件实际是华泰，请等待自动识别完成或手动把券商改为华泰。",
         action: "upload",
       });
       return;
@@ -5363,6 +5620,7 @@ export default function App() {
           onSubmitSecurityAlias={submitSecurityAlias}
           onSubmitCostCorrection={submitCostCorrection}
           onClearCostCorrection={clearCostCorrection}
+          onOpenCostRequest={setActiveCostRequest}
           dividends={dividends}
           tradeActivities={tradeActivities}
           realizedTrades={realizedTrades}

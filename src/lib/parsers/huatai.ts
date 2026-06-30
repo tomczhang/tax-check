@@ -45,7 +45,7 @@ interface TradeRecord {
   currency: Currency;
   symbol: string;
   securityName: string;
-  side: "buy" | "sell";
+  side: TradeActivity["side"];
   rawSide: string;
   quantity: number;
   unitPrice: number;
@@ -374,6 +374,14 @@ function tradeNameFromContinuation(product: string, continuation: string) {
   return clean(candidates.join(" ")) || product.replace(/:(?:HK|US|FUND)$/i, "");
 }
 
+function tradeSideFromRawSide(rawSide: string): TradeActivity["side"] {
+  if (rawSide.includes("买入开仓")) return "long_open";
+  if (rawSide.includes("卖出开仓") || rawSide.includes("沽出开仓")) return "short_open";
+  if (rawSide.includes("买入平仓")) return "short_close";
+  if (rawSide.includes("沽") || rawSide.includes("卖")) return "sell";
+  return "buy";
+}
+
 function parseTradeLine(sourcePdf: string, lines: TextLine[], index: number, sequence: number): TradeRecord | null {
   const line = lines[index];
   const text = canonicalText(line.text);
@@ -395,7 +403,7 @@ function parseTradeLine(sourcePdf: string, lines: TextLine[], index: number, seq
   const product = canonicalText(match[4]);
   const name = tradeNameFromContinuation(product, continuation);
   const security = securityFromProduct(product, name);
-  const side = rawSide.includes("沽") || rawSide.includes("卖") ? "sell" : "buy";
+  const side = tradeSideFromRawSide(rawSide);
   const quantity = Math.abs(parseNumber(quantityText));
   const grossAmount = Math.abs(parseNumber(match[7]));
   const netAmount = Math.abs(parseNumber(match[9]));
@@ -426,6 +434,26 @@ function parseTradeLine(sourcePdf: string, lines: TextLine[], index: number, seq
   };
 }
 
+function movementTradeSide(text: string): { side: TradeActivity["side"]; rawSide: string } | null {
+  const normalized = canonicalText(text);
+  if (normalized.includes(":FUND")) return null;
+  if (normalized.includes("买入开仓")) return { side: "long_open", rawSide: "买入开仓" };
+  if (normalized.includes("卖出开仓") || normalized.includes("沽出开仓")) return { side: "short_open", rawSide: "卖出开仓" };
+  if (normalized.includes("买入平仓")) return { side: "short_close", rawSide: "买入平仓" };
+  if (normalized.includes("卖出平仓") || normalized.includes("沽出平仓")) return { side: "sell", rawSide: "卖出平仓" };
+  return null;
+}
+
+function movementTradeSidesByRef(movements: AccountMovementRecord[]) {
+  const sides = new Map<string, { side: TradeActivity["side"]; rawSide: string }>();
+  for (const movement of movements) {
+    if (movement.type !== "买卖交易") continue;
+    const side = movementTradeSide(movement.text);
+    if (side) sides.set(movement.ref, side);
+  }
+  return sides;
+}
+
 function parseMovementAmount(remainder: string) {
   const numbers = Array.from(remainder.matchAll(NUMERIC_PATTERN)).map((match) => match[0]);
   if (numbers.length >= 2) return parseNumber(numbers[numbers.length - 2]);
@@ -437,7 +465,7 @@ function parseMovementLine(sourcePdf: string, lines: TextLine[], index: number, 
   const line = lines[index];
   const text = canonicalText(line.text);
   const match = text.match(
-    /^([A-Z0-9]{6,16})\s+(20\d{2}-\d{2}-\d{2})(?:\s+(20\d{2}-\d{2}-\d{2}))?\s+(资金存入|资金提取|现金存款|现金提款|产品存入|现货存入|产品提取|现货提取)\s+(.+)$/,
+    /^([A-Z0-9]{6,16})\s+(20\d{2}-\d{2}-\d{2})(?:\s+(20\d{2}-\d{2}-\d{2}))?\s+(资金存入|资金提取|现金存款|现金提款|产品存入|现货存入|产品提取|现货提取|买卖交易)\s+(.+)$/,
   );
   if (!match) return null;
 
@@ -453,6 +481,41 @@ function parseMovementLine(sourcePdf: string, lines: TextLine[], index: number, 
     currency: activeCurrency,
     amount: parseMovementAmount(match[5]),
     text: context,
+  };
+}
+
+function approximatelyEqual(a: number, b: number, tolerance = 0.02) {
+  return Math.abs(a - b) <= tolerance;
+}
+
+function positionNumbers(numbers: number[]) {
+  if (numbers.length >= 8) {
+    const standard = {
+      quantity: numbers[1],
+      price: numbers[4],
+      marketValue: numbers[5],
+    };
+    const shifted = {
+      quantity: numbers[2],
+      price: numbers[3],
+      marketValue: numbers[4],
+    };
+    if (
+      (!Number.isFinite(standard.quantity) ||
+        standard.quantity <= 0 ||
+        !approximatelyEqual(standard.quantity * standard.price, standard.marketValue)) &&
+      Number.isFinite(shifted.quantity) &&
+      shifted.quantity > 0 &&
+      approximatelyEqual(shifted.quantity * shifted.price, shifted.marketValue)
+    ) {
+      return shifted;
+    }
+    return standard;
+  }
+  return {
+    quantity: numbers[0],
+    price: numbers[2],
+    marketValue: numbers[3],
   };
 }
 
@@ -497,9 +560,7 @@ function parsePositionLine(sourcePdf: string, lines: TextLine[], index: number, 
   const firstNumberIndex = numericMatches[0].index ?? 0;
   const securityName = clean(rest.slice(0, firstNumberIndex));
   const numbers = numericMatches.map((item) => parseNumber(item[0]));
-  const quantity = numbers.length >= 8 ? numbers[1] : numbers[0];
-  const price = numbers.length >= 8 ? numbers[4] : numbers[2];
-  const marketValue = numbers.length >= 8 ? numbers[5] : numbers[3];
+  const { quantity, price, marketValue } = positionNumbers(numbers);
 
   if (!Number.isFinite(quantity) || quantity <= 0 || !Number.isFinite(marketValue)) return null;
   const normalizedSymbol = symbol.startsWith("HK") ? symbol.toUpperCase() : normalizeSymbol(symbol);
@@ -594,7 +655,10 @@ function parseHuataiLines(sourcePdf: string, lines: TextLine[]): HuataiRawData {
   return raw;
 }
 
-function tradeActivityFromTrade(trade: TradeRecord): TradeActivity {
+function tradeActivityFromTrade(trade: TradeRecord, movementSides: Map<string, { side: TradeActivity["side"]; rawSide: string }> = new Map()): TradeActivity {
+  const movementSide = movementSides.get(trade.ref);
+  const side = movementSide?.side ?? trade.side;
+  const rawSide = movementSide?.rawSide ?? trade.rawSide;
   return {
     id: `huatai-trade-${trade.tradeDate}-${trade.sequence}-${trade.currency}-${trade.symbol}-${trade.ref}`,
     broker: HUATAI_BROKER,
@@ -604,14 +668,14 @@ function tradeActivityFromTrade(trade: TradeRecord): TradeActivity {
     currency: trade.currency,
     symbol: trade.symbol,
     securityName: trade.securityName,
-    side: trade.side,
+    side,
     quantity: trade.quantity,
     unitPrice: trade.unitPrice,
     grossAmount: trade.grossAmount,
     fee: trade.fee,
     amount: trade.amount,
     source: "华泰成交单据",
-    note: `${trade.ref} ${trade.rawSide}${trade.settleDate ? `；交收日 ${trade.settleDate}` : ""}；${trade.sourcePdf} 第 ${trade.page} 页`,
+    note: `${trade.ref} ${rawSide}${trade.settleDate ? `；交收日 ${trade.settleDate}` : ""}；${trade.sourcePdf} 第 ${trade.page} 页`,
   };
 }
 
@@ -625,23 +689,19 @@ function movementCode(text: string) {
 }
 
 function buildIpoCostData(movements: AccountMovementRecord[]) {
-  const totals = new Map<string, number>();
   const prices = new Map<string, number>();
   for (const movement of movements) {
     const text = canonicalText(movement.text);
     if (!text.includes("IPO")) continue;
     const code = movementCode(text);
     if (!code) continue;
-    if (movement.amount !== null) {
-      totals.set(code, (totals.get(code) ?? 0) + movement.amount);
-    }
     const priceMatch = text.match(/Alloted:\s*[\d,]+(?:\.\d+)?\s*@\s*(\d+(?:\.\d+)?)/i) ?? text.match(/Qty:\s*[\d,]+(?:\.\d+)?\s*@\s*(\d+(?:\.\d+)?)/i);
     if (priceMatch) {
       const price = parseNumber(priceMatch[1]);
       if (price > 0) prices.set(code, price);
     }
   }
-  return { totals, prices };
+  return { prices };
 }
 
 function parseSuccessfulIpo(movement: AccountMovementRecord, costData: ReturnType<typeof buildIpoCostData>): TradeActivity | null {
@@ -657,8 +717,7 @@ function parseSuccessfulIpo(movement: AccountMovementRecord, costData: ReturnTyp
   const quantity = parseNumber(match[4]);
   if (quantity <= 0) return null;
 
-  const cashTotal = costData.totals.get(code);
-  const costBasis = cashTotal !== undefined && cashTotal < -0.01 ? Math.abs(cashTotal) : price > 0 ? quantity * price : 0;
+  const costBasis = price > 0 ? quantity * price : 0;
   const security = securityFromCode(code, match[2], "HKD");
   return {
     id: `huatai-ipo-${movement.date}-${code}-${movement.ref}`,
@@ -675,7 +734,7 @@ function parseSuccessfulIpo(movement: AccountMovementRecord, costData: ReturnTyp
     grossAmount: price > 0 ? quantity * price : undefined,
     amount: roundMoney(costBasis),
     source: "华泰户口变动",
-    note: `IPO 中签入账；${movement.ref}；${cashTotal !== undefined && cashTotal < -0.01 ? "已按相关 IPO 现金流水汇总成本" : "未完整读取申购现金流，按发行价暂估成本"}；${movement.sourcePdf} 第 ${movement.page} 页`,
+    note: `IPO 中签入账；${movement.ref}；按发行价 × 中签数量确认成本，IPO 融资/退款现金流水不并入证券成本；${movement.sourcePdf} 第 ${movement.page} 页`,
   };
 }
 
@@ -898,6 +957,7 @@ function sortActivities(activities: TradeActivity[]) {
     transfer_in: 1,
     stock_split: 1.5,
     buy: 2,
+    long_open: 2,
     short_open: 2,
     short_close: 2,
     sell: 3,
@@ -933,7 +993,7 @@ function buildMissingCostRequests(
     if (activity.excludedFromTaxReplay) continue;
     const key = `${activity.broker}::${activity.currency}::${normalizeSymbol(activity.symbol)}`;
     const currentQuantity = quantities.get(key) ?? 0;
-    if (activity.side === "buy" || activity.side === "acquire" || activity.side === "transfer_in") {
+    if (activity.side === "buy" || activity.side === "long_open" || activity.side === "acquire" || activity.side === "transfer_in") {
       quantities.set(key, currentQuantity + activity.quantity);
       continue;
     }
@@ -1043,7 +1103,7 @@ function openPositionFromRecord(position: PositionRecord): OpenPosition {
 }
 
 function aggregateIssue(raw: HuataiRawData): ReviewIssue {
-  const buyCount = raw.trades.filter((trade) => trade.side === "buy").length;
+  const buyCount = raw.trades.filter((trade) => trade.side === "buy" || trade.side === "long_open").length;
   const sellRows = raw.trades.filter((trade) => trade.side === "sell");
   const sellByCurrency = new Map<Currency, number>();
   for (const sell of sellRows) {
@@ -1101,7 +1161,8 @@ export async function parseHuataiPdfs(
     }
   }
 
-  const tradeActivities = raw.trades.map(tradeActivityFromTrade);
+  const movementSides = movementTradeSidesByRef(raw.movements);
+  const tradeActivities = raw.trades.map((trade) => tradeActivityFromTrade(trade, movementSides));
   const movementData = buildMovementActivitiesAndDividends(raw.movements);
   const activities = sortActivities([...tradeActivities, ...movementData.activities]);
   const missing = buildMissingCostRequests(activities, options.targetYear, options.manualCosts ?? []);

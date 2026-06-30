@@ -1758,6 +1758,27 @@ tr.open {
   overflow-wrap: anywhere;
 }
 
+.position-cost-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.position-cost-editor {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border-2);
+}
+
+.position-cost-editor .cost-edit-input {
+  width: min(180px, 100%);
+}
+
 .position-cost-chain {
   display: grid;
   gap: 6px;
