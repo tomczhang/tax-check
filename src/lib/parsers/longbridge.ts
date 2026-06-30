@@ -115,6 +115,14 @@ interface PositionMoveRecord {
   quantity: number;
 }
 
+interface PositionMoveFields {
+  date: string;
+  moveType: string;
+  item: string;
+  note: string;
+  quantity: string;
+}
+
 interface PortfolioRecord {
   sourcePdf: string;
   page: number;
@@ -1264,6 +1272,42 @@ function isPositionMoveNoteToken(value: string) {
   return text.includes("账户迁移") || text.includes("户口迁移") || text.includes("转仓") || text.includes("转入") || text.includes("转出");
 }
 
+function isStandalonePositionMoveCandidate(line: TextLine) {
+  if (!hasDateAtStart(line)) return false;
+  const text = canonicalText(line.text);
+  return (
+    text.includes("股票进账") ||
+    text.includes("股票出账") ||
+    text.includes("证券转入") ||
+    text.includes("证券转出") ||
+    text.includes("公司行动股票") ||
+    text.includes("中签")
+  );
+}
+
+function positionMoveFromFields(
+  sourcePdf: string,
+  page: number,
+  market: string,
+  fields: PositionMoveFields,
+  documentAliases: Map<string, SecurityAlias>,
+): PositionMoveRecord | null {
+  if (!DATE_RE.test(fields.date) || !fields.moveType || !fields.item || !isNumericCell(fields.quantity)) return null;
+  const security = splitSecurity(fields.item, documentAliases);
+  const inferredMarket = inferTradeMarket(fields.item, security);
+  return {
+    sourcePdf,
+    page,
+    market: market || security.market || inferredMarket.market,
+    date: fields.date,
+    moveType: fields.moveType,
+    code: security.code,
+    name: security.name,
+    note: fields.note,
+    quantity: parseNumber(fields.quantity),
+  };
+}
+
 function parsePositionMoveLine(
   sourcePdf: string,
   line: TextLine,
@@ -1272,14 +1316,23 @@ function parsePositionMoveLine(
 ): PositionMoveRecord | null {
   if (!hasDateAtStart(line)) return null;
   const tokens = line.tokens;
-  const date = tokens[0]?.text ?? "";
-  const quantity = tokens.at(-1)?.text ?? "";
+  const cellFields: PositionMoveFields = {
+    date: lineCell(line, 0, 105),
+    moveType: lineCell(line, 105, 220),
+    item: lineCell(line, 220, 340),
+    note: lineCell(line, 340, 520),
+    quantity: lineCell(line, 520, 610),
+  };
+  const fromCells = positionMoveFromFields(sourcePdf, line.page, market, cellFields, documentAliases);
+  if (fromCells) return fromCells;
 
   const codeIndex = tokens.findIndex((token, index) => {
     if (index < 2 || token.x > 380) return false;
     return isPositionMoveSecurityToken(token.text);
   });
   if (codeIndex < 2) return null;
+  const date = tokens[0]?.text ?? "";
+  const quantity = tokens.at(-1)?.text ?? "";
 
   const noteStartIndex = tokens.findIndex((token, index) => {
     if (index <= codeIndex || index >= tokens.length - 1) return false;
@@ -1296,20 +1349,7 @@ function parsePositionMoveLine(
       ? clean(tokens.slice(noteStartIndex, tokens.length - 1).map((token) => token.text).join(" "))
       : "";
 
-  if (!DATE_RE.test(date) || !moveType || !item || !quantity) return null;
-  const security = splitSecurity(item, documentAliases);
-
-  return {
-    sourcePdf,
-    page: line.page,
-    market,
-    date,
-    moveType,
-    code: security.code,
-    name: security.name,
-    note,
-    quantity: parseNumber(quantity),
-  };
+  return positionMoveFromFields(sourcePdf, line.page, market, { date, moveType, item, note, quantity }, documentAliases);
 }
 
 function parsePortfolioLine(
@@ -1495,6 +1535,20 @@ function parseLongbridgeLines(
     if (text.startsWith("市场:") && activeTable === "position_move") {
       moveMarket = text.replace("市场:", "").trim();
       continue;
+    }
+
+    if (isStandalonePositionMoveCandidate(line)) {
+      const move = parsePositionMoveLine(sourcePdf, line, moveMarket, documentSecurityAliases);
+      if (move) {
+        activeTable = "position_move";
+        raw.moves.push(move);
+        addDocumentSecurityAlias(documentSecurityAliases, {
+          code: move.code,
+          name: move.name,
+          market: move.market,
+        });
+        continue;
+      }
     }
 
     if (activeTable !== "stock_trade" && activeTable !== "cash_flow" && activeTable !== "position_move") {
@@ -1946,7 +2000,8 @@ function hasEarlierMoveCoverage(raw: LongbridgeRawData, position: PortfolioRecor
 }
 
 function isOpeningPositionAlreadyCovered(raw: LongbridgeRawData, position: PortfolioRecord) {
-  return hasEarlierTradeCoverage(raw, position) || hasEarlierMoveCoverage(raw, position);
+  const coveredQuantity = priorTradeQuantityBeforeStatement(raw, position) + priorMoveQuantityBeforeStatement(raw, position);
+  return coveredQuantity + quantityTolerance(position.beginQty) >= position.beginQty;
 }
 
 function deriveOpeningCostFromStatement(raw: LongbridgeRawData, position: PortfolioRecord) {

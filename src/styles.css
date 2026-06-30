@@ -100,7 +100,7 @@ button {
 
 .topbar-inner {
   width: 100%;
-  max-width: 1500px;
+  max-width: 1760px;
   height: 100%;
   margin: 0 auto;
   padding: 0 28px;
@@ -341,9 +341,9 @@ button {
 }
 
 .wrap {
-  max-width: 1500px;
+  width: min(100%, 1760px);
   margin: 0 auto;
-  padding: 22px 44px 60px 28px;
+  padding: 22px 36px 60px;
 }
 
 .kpis {
@@ -609,7 +609,7 @@ button {
 
 .grid {
   display: grid;
-  grid-template-columns: 298px 1fr;
+  grid-template-columns: 276px minmax(0, 1fr);
   gap: 20px;
   align-items: start;
 }
@@ -678,9 +678,14 @@ button {
   color: inherit;
 }
 
-.drop:hover {
+.drop:hover,
+.drop.dragging {
   border-color: var(--accent);
   background: var(--accent-soft);
+}
+
+.drop.dragging {
+  transform: translateY(-1px);
 }
 
 .drop .di {
@@ -1502,7 +1507,7 @@ tr.open {
 }
 
 .detail-wrap {
-  padding: 16px 18px 20px 42px;
+  padding: 16px 14px 20px 26px;
 }
 
 .detail-head {
@@ -1850,7 +1855,7 @@ tr.open {
 }
 
 .txn-table {
-  width: auto;
+  width: 100%;
   min-width: 805px;
   border: 1px solid var(--border-2);
   border-radius: 9px;
@@ -1859,7 +1864,8 @@ tr.open {
 }
 
 .stock-flow-table {
-  min-width: 1160px;
+  table-layout: fixed;
+  min-width: 0;
 }
 
 .txn-table thead th {
@@ -1868,14 +1874,74 @@ tr.open {
   text-transform: none;
   letter-spacing: 0.01em;
   font-size: 11px;
-  padding: 9px 16px;
+  padding: 9px 12px;
   color: var(--muted);
 }
 
 .txn-table td {
-  padding: 9px 16px;
+  padding: 9px 12px;
   font-size: 12.5px;
   border-bottom: 1px solid var(--border);
+}
+
+.stock-flow-table th,
+.stock-flow-table td {
+  vertical-align: middle;
+}
+
+.stock-flow-table th:nth-child(1) {
+  width: 118px;
+}
+
+.stock-flow-table th:nth-child(2) {
+  width: 112px;
+}
+
+.stock-flow-table th:nth-child(3) {
+  width: 70px;
+}
+
+.stock-flow-table th:nth-child(4) {
+  width: 82px;
+}
+
+.stock-flow-table th:nth-child(5) {
+  width: 86px;
+}
+
+.stock-flow-table th:nth-child(6) {
+  width: 138px;
+}
+
+.stock-flow-table th:nth-child(7) {
+  width: 110px;
+}
+
+.stock-flow-table th:nth-child(8) {
+  width: 94px;
+}
+
+.stock-flow-table th:nth-child(9) {
+  width: 92px;
+}
+
+.stock-flow-table th:nth-child(10) {
+  width: 78px;
+}
+
+.stock-flow-table th:nth-child(11) {
+  width: 70px;
+}
+
+.stock-flow-table .th-sort {
+  max-width: 100%;
+}
+
+.flow-source-cell {
+  max-width: 112px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .txn-table tbody tr:last-child td {
@@ -1883,11 +1949,11 @@ tr.open {
 }
 
 .cost-cell {
-  min-width: 178px;
+  min-width: 0;
 }
 
 .price-cell {
-  min-width: 96px;
+  min-width: 0;
 }
 
 .cost-cell-content {
@@ -1906,6 +1972,7 @@ tr.open {
   font-size: 10.5px;
   font-weight: 600;
   line-height: 1.1;
+  white-space: normal;
 }
 
 .cost-correction-badge {

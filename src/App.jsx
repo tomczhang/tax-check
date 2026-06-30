@@ -1242,8 +1242,8 @@ const LONGBRIDGE_TEXT_MARKERS = [
   "lbhk",
 ];
 const LONGBRIDGE_STOCK_LEDGER_HEADERS = ["编号", "业务时间", "账户类型", "业务分类", "股票代码", "账户流向", "数量", "总数量"];
-const TIGER_TEXT_MARKERS = ["Tiger Brokers", "Tiger Brokers (NZ)", "老虎", "活动报表", "Tax Form Record", "Key Tax Figures"];
-const PANDA_TEXT_MARKERS = ["熊猫证券", "熊貓證券", "Panda Securities", "fafa.hk"];
+const TIGER_TEXT_MARKERS = ["Tiger Brokers", "Tiger Brokers (NZ)", "活动报表", "Tax Form Record", "Key Tax Figures"];
+const PANDA_TEXT_MARKERS = ["熊猫证券", "熊貓證券", "Panda Securities", "fafa.hk", "cs@fafa.hk", "BNC380"];
 const CMB_WING_LUNG_TEXT_MARKERS = ["招商永隆", "招商永隆銀行", "招商永隆银行", "CMB Wing Lung", "Annual Income Report", "全年收入報告", "全年收入报告"];
 const ZIRCON_TEXT_MARKERS = ["卓锐", "卓銳", "Zircon Securities"];
 const USMART_TEXT_MARKERS = ["盈立", "盈立證券", "盈立证券", "uSmart Securities", "usmarthk.com", "usmartsecurities.com"];
@@ -1288,6 +1288,33 @@ function hasAnyMarker(text, markers) {
   return markers.some((marker) => normalized.includes(String(marker).normalize("NFKC").toLowerCase()));
 }
 
+function normalizedBrokerMarkerText(text) {
+  return String(text ?? "")
+    .normalize("NFKC")
+    .replaceAll("戶", "户")
+    .replaceAll("賬", "账")
+    .replaceAll("帳", "账")
+    .replace(/\s+/g, " ");
+}
+
+function hasTigerReportMarkers(text) {
+  const normalized = normalizedBrokerMarkerText(text);
+  const lower = normalized.toLowerCase();
+  return (
+    lower.includes("tiger brokers") ||
+    (normalized.includes("Tax Form Record") && normalized.includes("Key Tax Figures")) ||
+    (normalized.includes("活动报表") && normalized.includes("交易明细"))
+  );
+}
+
+function hasPandaMonthlyMarkers(text) {
+  const normalized = normalizedBrokerMarkerText(text);
+  const hasPandaAccount = /(?:账户|账戶|户口)?编号[:：]?\s*PDC\d{6,}/i.test(normalized);
+  const hasPandaBrokerCode = /经纪人编号[:：]?\s*PD[A-Za-z0-9]{2,}/i.test(normalized);
+  const hasMonthlyStatementShape = normalized.includes("账户总览") && normalized.includes("投资组合详情");
+  return hasPandaAccount || (hasPandaBrokerCode && hasMonthlyStatementShape);
+}
+
 function hasCmbWingLungMonthlyMarkers(text) {
   const normalized = String(text ?? "").normalize("NFKC");
   return normalized.includes("证券账户月结单") && normalized.includes("证券账户号码");
@@ -1315,6 +1342,10 @@ function hasLongbridgeStockLedgerSheet(workbook) {
 
 function lowerFileName(fileName) {
   return String(fileName ?? "").toLowerCase();
+}
+
+function isFileDragEvent(event) {
+  return Array.from(event.dataTransfer?.types ?? []).includes("Files");
 }
 
 function isExcelFile(fileName) {
@@ -1417,18 +1448,25 @@ function workbookPreviewText(workbook) {
     .join(" ");
 }
 
-async function pdfPreviewText(file) {
+async function pdfPreviewText(file, password) {
   const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
   pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
   const loadingTask = pdfjs.getDocument({
     data: new Uint8Array(await file.arrayBuffer()),
+    password: password?.trim() || undefined,
     disableFontFace: true,
     isEvalSupported: false,
   });
   const document = await loadingTask.promise;
-  const pageCount = Math.min(document.numPages, 4);
+  const pageNumbers = Array.from(
+    new Set([
+      ...Array.from({ length: Math.min(document.numPages, 4) }, (_, index) => index + 1),
+      Math.max(1, document.numPages - 1),
+      document.numPages,
+    ]),
+  ).sort((a, b) => a - b);
   const chunks = [];
-  for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
+  for (const pageNumber of pageNumbers) {
     const page = await document.getPage(pageNumber);
     const content = await page.getTextContent();
     chunks.push(
@@ -1441,7 +1479,7 @@ async function pdfPreviewText(file) {
   return chunks.join(" ");
 }
 
-async function detectBrokerFromFile(file) {
+async function detectBrokerFromFile(file, password) {
   const fallback = baseBrokerGuess(file.name);
   try {
     if (isExcelFile(file.name)) {
@@ -1494,7 +1532,7 @@ async function detectBrokerFromFile(file) {
           reason: "文件内容包含长桥特征；当前长桥解析器支持 PDF 月结单和股票账户明细 Excel。",
         };
       }
-      if (hasAnyMarker(preview, TIGER_TEXT_MARKERS)) {
+      if (hasTigerReportMarkers(preview)) {
         return {
           broker: "tiger",
           confidence: "medium",
@@ -1525,7 +1563,7 @@ async function detectBrokerFromFile(file) {
     }
 
     if (isPdfFile(file.name)) {
-      const preview = await pdfPreviewText(file);
+      const preview = await pdfPreviewText(file, password);
       if (hasAnyMarker(preview, IBKR_TEXT_MARKERS)) {
         return {
           broker: "ibkr",
@@ -1533,7 +1571,7 @@ async function detectBrokerFromFile(file) {
           reason: "PDF 内容包含 IBKR/盈透活动账单特征，已默认选择 IBKR。",
         };
       }
-      if (hasAnyMarker(preview, TIGER_TEXT_MARKERS)) {
+      if (hasTigerReportMarkers(preview)) {
         return {
           broker: "tiger",
           confidence: "high",
@@ -1559,6 +1597,13 @@ async function detectBrokerFromFile(file) {
           broker: "panda",
           confidence: "high",
           reason: "PDF 内容包含熊猫证券特征，已默认选择熊猫。",
+        };
+      }
+      if (hasPandaMonthlyMarkers(preview)) {
+        return {
+          broker: "panda",
+          confidence: "high",
+          reason: "PDF 内容包含熊猫月结单账户编号特征，已默认选择熊猫。",
         };
       }
       if (hasAnyMarker(preview, LONGBRIDGE_TEXT_MARKERS)) {
@@ -1956,6 +2001,7 @@ function Sidebar({
   year,
   files,
   onUpload,
+  onFilesDrop,
   onRemoveFile,
   onBrokerChange,
   onAnalyze,
@@ -1965,6 +2011,7 @@ function Sidebar({
 }) {
   const fileGroups = useMemo(() => groupFilesByYear(files), [files]);
   const [collapsedFileYears, setCollapsedFileYears] = useState({});
+  const [isFileDragActive, setIsFileDragActive] = useState(false);
 
   useEffect(() => {
     setCollapsedFileYears((current) => {
@@ -1988,6 +2035,37 @@ function Sidebar({
     }));
   }
 
+  function handleUploadDrag(event) {
+    if (!isFileDragEvent(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.dataTransfer) {
+      event.dataTransfer.dropEffect = "copy";
+    }
+    setIsFileDragActive(true);
+  }
+
+  function handleUploadDragLeave(event) {
+    if (!isFileDragEvent(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const nextTarget = event.relatedTarget;
+    if (!(nextTarget instanceof Node) || !event.currentTarget.contains(nextTarget)) {
+      setIsFileDragActive(false);
+    }
+  }
+
+  function handleUploadDrop(event) {
+    if (!isFileDragEvent(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setIsFileDragActive(false);
+    const incoming = Array.from(event.dataTransfer?.files ?? []);
+    if (incoming.length > 0) {
+      onFilesDrop(incoming);
+    }
+  }
+
   return (
     <aside>
       <div className="panel" data-tour-id="broker-files-panel">
@@ -1998,11 +2076,20 @@ function Sidebar({
           <span className="count">{files.length}</span>
         </div>
         <div className="panel-b">
-          <button className="drop" type="button" onClick={onUpload} data-tour-id="upload-card">
+          <button
+            className={`drop${isFileDragActive ? " dragging" : ""}`}
+            type="button"
+            onClick={onUpload}
+            onDragEnter={handleUploadDrag}
+            onDragOver={handleUploadDrag}
+            onDragLeave={handleUploadDragLeave}
+            onDrop={handleUploadDrop}
+            data-tour-id="upload-card"
+          >
             <span className="di">
               <Upload />
             </span>
-            <p>拖入或点击上传券商文件</p>
+            <p>{isFileDragActive ? "松开即可上传券商文件" : "拖入或点击上传券商文件"}</p>
             <span>支持富途 Excel / 长桥 PDF / 熊猫 PDF / 招商永隆 PDF / 卓锐 PDF / 盈立 PDF / 老虎 PDF / IBKR PDF · .xlsx .xls .pdf</span>
           </button>
           <ul className="filelist">
@@ -2519,17 +2606,17 @@ function StockFlowDetailPanel({
                 <ArrowUpDown />
               </button>
             </th>
-            <th>来源</th>
+            <th className="flow-source-col">来源</th>
             <th className="c">方向</th>
             <th className="r">数量</th>
             <th className="r">成交价</th>
-            <th className="r">成交额 / 成本</th>
+            <th className="r">金额 / 成本</th>
             <th className="r" title={`按${method.tag}匹配成本后的已实现买卖盈亏`}>
               买卖盈亏
             </th>
-            <th className="r">当前持有总股数</th>
-            <th className="r">当前平均成本</th>
-            <th className="r">手续费</th>
+            <th className="r">持仓</th>
+            <th className="r">均本</th>
+            <th className="r">费用</th>
             <th className="c">订正</th>
           </tr>
         </thead>
@@ -2562,13 +2649,15 @@ function StockFlowDetailPanel({
                     : null;
               const correctionLabel = correctionKind === "realized" ? "卖出成本" : "转入成本";
 
-              return (
-                <tr key={flow.id}>
-                  <td className="num muted">{flow.date}</td>
-                  <td>{flow.source ?? "-"}</td>
-                  <td className="c">
-                    <span className={`side ${isBuyLikeActivity({ side: flow.rawSide }) ? "bi" : "se"}`}>{flow.side}</span>
-                  </td>
+                return (
+                  <tr key={flow.id}>
+                    <td className="num muted">{flow.date}</td>
+                    <td className="flow-source-cell" title={[flow.source, flow.note].filter(Boolean).join(" · ") || undefined}>
+                      {flow.source ?? "-"}
+                    </td>
+                    <td className="c">
+                      <span className={`side ${isBuyLikeActivity({ side: flow.rawSide }) ? "bi" : "se"}`}>{flow.side}</span>
+                    </td>
                   <td className="r num">{flow.qty.toLocaleString()}</td>
                   <td className="r num price-cell">{fmtPrice(flow.price)}</td>
                   <td className="r num cost-cell">
@@ -3239,6 +3328,7 @@ function Workbench({
   summary,
   files,
   onUpload,
+  onFilesDrop,
   onRemoveFile,
   onBrokerChange,
   onAnalyze,
@@ -3281,6 +3371,7 @@ function Workbench({
             year={year}
             files={files}
             onUpload={onUpload}
+            onFilesDrop={onFilesDrop}
             onRemoveFile={onRemoveFile}
             onBrokerChange={onBrokerChange}
             onAnalyze={onAnalyze}
@@ -4507,6 +4598,23 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    function preventFileNavigation(event) {
+      if (!isFileDragEvent(event)) return;
+      event.preventDefault();
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect = "none";
+      }
+    }
+
+    window.addEventListener("dragover", preventFileNavigation);
+    window.addEventListener("drop", preventFileNavigation);
+    return () => {
+      window.removeEventListener("dragover", preventFileNavigation);
+      window.removeEventListener("drop", preventFileNavigation);
+    };
+  }, []);
+
+  useEffect(() => {
     if (!parsedInput) return;
     setAnalyses(recomputeAnalyses(parsedInput, year, costCorrectionInputsFromState(costCorrections)));
   }, [costCorrections, parsedInput, year]);
@@ -4576,6 +4684,47 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [activeIssue, modalIssues.length, pendingCostFlashAfterIssues]);
 
+  useEffect(() => {
+    if (!password.trim()) return undefined;
+    const candidates = files.filter(
+      (entry) => entry.file && isPdfFile(entry.name) && !entry.brokerTouched,
+    );
+    if (candidates.length === 0) return undefined;
+
+    let cancelled = false;
+    Promise.all(
+      candidates.map(async (entry) => ({
+        id: entry.id,
+        guess: await detectBrokerFromFile(entry.file, password),
+      })),
+    ).then((detected) => {
+      if (cancelled) return;
+      const guessesById = new Map(detected.map((item) => [item.id, item.guess]));
+      setFiles((current) => {
+        let changed = false;
+        const next = current.map((entry) => {
+          const guess = guessesById.get(entry.id);
+          if (!guess || entry.brokerTouched) return entry;
+          if (entry.broker === guess.broker && entry.brokerConfidence === guess.confidence && entry.brokerReason === guess.reason) {
+            return entry;
+          }
+          changed = true;
+          return {
+            ...entry,
+            broker: guess.broker,
+            brokerConfidence: guess.confidence,
+            brokerReason: guess.reason,
+          };
+        });
+        return changed ? next : current;
+      });
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [files, password]);
+
   function pushManualIssue(issue) {
     setManualIssues((current) => [...current.filter((item) => item.id !== issue.id), issue]);
     setDismissedIssueIds((current) => {
@@ -4590,8 +4739,8 @@ export default function App() {
     fileInputRef.current?.click();
   }
 
-  async function handleFileInput(event) {
-    const incoming = Array.from(event.target.files ?? []);
+  async function addUploadedFiles(fileList) {
+    const incoming = Array.from(fileList ?? []);
     if (!incoming.length) return;
     const timestamp = Date.now();
     const scanned = await Promise.all(
@@ -4623,7 +4772,6 @@ export default function App() {
       });
     }
     if (accepted.length === 0) {
-      event.target.value = "";
       return;
     }
 
@@ -4646,11 +4794,10 @@ export default function App() {
       };
     });
     setFiles((current) => [...current, ...pendingEntries]);
-    event.target.value = "";
 
     const detected = await Promise.all(
       accepted.map(async ({ file }) => ({
-        guess: await detectBrokerFromFile(file),
+        guess: await detectBrokerFromFile(file, password),
       })),
     );
 
@@ -4667,6 +4814,13 @@ export default function App() {
         };
       }),
     );
+  }
+
+  async function handleFileInput(event) {
+    const input = event.target;
+    const incoming = Array.from(input.files ?? []);
+    input.value = "";
+    await addUploadedFiles(incoming);
   }
 
   function removeFile(fileId) {
@@ -4903,6 +5057,7 @@ export default function App() {
           summary={summary}
           files={files}
           onUpload={triggerUpload}
+          onFilesDrop={addUploadedFiles}
           onRemoveFile={removeFile}
           onBrokerChange={updateBroker}
           onAnalyze={runAnalysis}
