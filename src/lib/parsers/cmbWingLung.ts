@@ -286,6 +286,32 @@ function isCmbWingLungMonthlyStatement(lines: TextLine[]) {
   return text.includes("证券账户月结单") && text.includes("证券账户号码");
 }
 
+function isCmbWingLungWealthMgmtStatement(lines: TextLine[]) {
+  // 用 NFKC + 全字符替换做一次"完全简化的版本"用于检测
+  // 注意：CMB WING LUNG BANK 这种字样可能出现在 page 2 重要事项中，要扫描整份文件
+  const text = lines
+    .map((line) => line.text)
+    .join("\n")
+    .normalize("NFKC")
+    .replace(/[一-鿿]/g, (ch) => {
+      const TRAD_TO_SIMP: Record<string, string> = {
+        報: "报", 客: "客", 戶: "户", 貨: "货", 幣: "币",
+        結: "结", 餘: "余", 賬: "账", 號: "号",
+        碼: "码", 證: "证", 銀: "银", 行: "行", 單: "单",
+        買: "买", 賣: "卖", 臺: "台", 亞: "亚",
+        財: "财", 帳: "账", 綜: "综", 合: "合", 月: "月",
+        理: "理",
+      };
+      return TRAD_TO_SIMP[ch] ?? ch;
+    });
+  return (
+    text.includes("理财账户") &&
+    (text.includes("综合月结单") || text.includes("综合月結單")) &&
+    text.includes("CMB WING LUNG") &&
+    text.includes("STATEMENT DATE")
+  );
+}
+
 async function extractPdfLines(fileName: string, data: ArrayBuffer) {
   const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
   pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
@@ -307,7 +333,7 @@ async function extractPdfLines(fileName: string, data: ArrayBuffer) {
         if (!Array.isArray(candidate.transform)) return [];
         return [
           {
-            text: clean(candidate.str),
+            text: canonicalText(candidate.str),
             x: Number(candidate.transform[4] ?? 0),
             y: Number(candidate.transform[5] ?? 0),
           },
@@ -458,6 +484,49 @@ function parseMonthlyPositionLine(fileName: string, line: TextLine, statementDat
   };
 }
 
+// ─── 理财账户综合月结单解析 ─────────────────────────────────────────────────
+
+interface WealthMgmtTradeRecord {
+  sourcePdf: string;
+  page: number;
+  tradeDate: string;
+  ref: string;
+  fundNameEn: string;
+  currency: Currency;
+  type: string; // SUB/RDM/DIV/SW/S/SW/R/TR/I/TR/O
+  quantity: number;
+  unitPrice: number;
+  settlementAmount: number;
+  text: string;
+}
+
+function parseWealthMgmtTradeLine(fileName: string, line: TextLine): WealthMgmtTradeRecord | null {
+  const text = canonicalText(line.text);
+  // 格式: TRAN DATE REF NO. FUND NAME TYPE NO. OF UNITS UNIT PRICE SETTLEMENT AMT(#)
+  // 示例: 20240304 SS00272919 E FUND (HK) US DOLLAR MONEY MARK SUB 53.3674 USD 112.4280 USD 6,000.00
+  // SW/S 和 SW/R 里的 / 需要用 RegExp 构造避免被当作字符类结束符
+  const tradeRx = new RegExp(
+    String.raw`^(\d{8})\s+(\S+)\s+(.+?)\s+(SUB|RDM|DIV|SW/S|SW/R|TR/I|TR/O|BUY|SELL)\s+([\d,]+\.?\d*)\s+([A-Z]{3})\s+([\d,]+\.?\d*)\s+([A-Z]{3})\s+([\d,]+\.?\d*)$`,
+  );
+  const match = text.match(tradeRx);
+  if (!match) return null;
+  const currency = parseCurrency(match[6]);
+  if (!currency) return null;
+  return {
+    sourcePdf: fileName,
+    page: line.page,
+    tradeDate: `${match[1].slice(0, 4)}-${match[1].slice(4, 6)}-${match[1].slice(6, 8)}`,
+    ref: match[2],
+    fundNameEn: match[3].trim(),
+    currency,
+    type: match[4],
+    quantity: parseNumber(match[5]),
+    unitPrice: parseNumber(match[7]),
+    settlementAmount: parseNumber(match[9]),
+    text: line.text,
+  };
+}
+
 function parseMonthlyStatement(fileName: string, lines: TextLine[]): MonthlyRawData {
   const statementDate = parseStatementDate(lines);
   const raw: MonthlyRawData = {
@@ -510,6 +579,88 @@ function parseMonthlyStatement(fileName: string, lines: TextLine[]): MonthlyRawD
   }
 
   return raw;
+}
+
+function wealthMgmtActivityFromTrade(trade: WealthMgmtTradeRecord): TradeActivity {
+  const type = trade.type;
+  // SUB/TR/I/SW/R/BUY = buy；RDM/TR/O/SW/S/SELL = sell；DIV 不产生交易
+  const isBuy = ["SUB", "TR/I", "SW/R", "BUY"].includes(type);
+  const isSell = ["RDM", "TR/O", "SW/S", "SELL"].includes(type);
+  if (!isBuy && !isSell) return null!; // DIV 不作为交易
+  return {
+    id: `cmb-wing-lung-wm-trade-${trade.tradeDate}-${trade.ref}-${trade.fundNameEn.replace(/\s+/g, "-")}-${isBuy ? "buy" : "sell"}`,
+    broker: CMB_WING_LUNG_BROKER,
+    date: trade.tradeDate,
+    sequence: 0,
+    market: "香港市场",
+    currency: trade.currency,
+    symbol: `CMBWM${djb2Hash(trade.fundNameEn)}`,
+    securityName: trade.fundNameEn,
+    side: isBuy ? "buy" : "sell",
+    quantity: trade.quantity,
+    unitPrice: trade.unitPrice,
+    grossAmount: trade.quantity * trade.unitPrice,
+    fee: Math.abs(trade.quantity * trade.unitPrice - trade.settlementAmount),
+    amount: trade.settlementAmount,
+    source: trade.sourcePdf,
+    note: `${trade.ref} ${trade.type}；招商永隆理财账户综合月结单`,
+  };
+}
+
+function djb2Hash(str: string): string {
+  let hash = 5381;
+  for (let i = 0; i < str.length; i++) {
+    hash = (hash * 33) ^ str.charCodeAt(i);
+  }
+  return Math.abs(hash).toString(36).toUpperCase().slice(0, 8);
+}
+
+
+function parseWealthMgmtStatement(fileName: string, lines: TextLine[]): {
+  trades: WealthMgmtTradeRecord[];
+  issues: ReviewIssue[];
+} {
+  // 提取结单日期: STATEMENT DATE 20240328
+  const text = canonicalText(lines.slice(0, 30).map((l) => l.text).join("\n"));
+  const dateMatch = text.match(/STATEMENT DATE\s+(\d{4})(\d{2})(\d{2})/);
+  const statementDate = dateMatch ? `${dateMatch[1]}-${dateMatch[2]}-${dateMatch[3]}` : undefined;
+
+  const trades: WealthMgmtTradeRecord[] = [];
+  const issues: ReviewIssue[] = [];
+
+  // 交易区域: 找交易日 + 参考号 表头行（unique，不与父节标题冲突）
+  const txStart = lines.findIndex((l) => {
+    const t = canonicalText(l.text);
+    return (t.includes("交易日") && t.includes("參考號碼")) ||
+           (t.includes("交易日") && t.includes("參考号码"));
+  });
+  // 持仓区域: 找"持有单位"或"持有單位"HOLDINGS表头行（unique，不与父节冲突）
+  const holdingsStart = lines.findIndex((l) => {
+    const t = canonicalText(l.text);
+    return (t.includes("持有单位") || t.includes("持有單位")) && t.includes("HOLDINGS");
+  });
+
+
+
+  if (txStart >= 0) {
+    const txEnd = holdingsStart >= 0 ? holdingsStart : lines.length;
+    for (let i = txStart; i < txEnd; i++) {
+      const trade = parseWealthMgmtTradeLine(fileName, lines[i]);
+      if (trade) trades.push(trade);
+    }
+  }
+
+  if (!statementDate) {
+    issues.push({
+      id: `cmb-wing-lung-wm-${fileName}-missing-date`,
+      severity: "warning",
+      title: "未识别理财账户月结单日期",
+      detail: "已识别为招商永隆理财账户综合月结单，但没有读取到结单日期。",
+      source: fileName,
+    });
+  }
+
+  return { trades, issues };
 }
 
 function monthlyActivityFromTrade(trade: MonthlyTradeRecord): TradeActivity {
@@ -868,12 +1019,34 @@ export async function parseCmbWingLungPdfs(
         continue;
       }
 
+      if (isCmbWingLungWealthMgmtStatement(lines)) {
+        const wm = parseWealthMgmtStatement(file.name, lines);
+        // 交易 → tradeActivities
+        for (const trade of wm.trades) {
+          const activity = wealthMgmtActivityFromTrade(trade);
+          if (activity) parsed.tradeActivities.push(activity);
+        }
+        parsed.issues.push(...wm.issues);
+        if (wm.trades.length > 0) {
+          const buyCount = wm.trades.filter((t) => ["SUB", "TR/I", "SW/R", "BUY"].includes(t.type)).length;
+          const sellCount = wm.trades.filter((t) => ["RDM", "TR/O", "SW/S", "SELL"].includes(t.type)).length;
+          parsed.issues.push({
+            id: `cmb-wing-lung-wm-${file.name}-parsed`,
+            severity: "info",
+            title: "已解析招商永隆理财账户综合月结单",
+            detail: `已读取 ${file.name}：买入 ${buyCount} 笔，卖出 ${sellCount} 笔。`,
+            source: file.name,
+          });
+        }
+        continue;
+      }
+
       if (!isCmbWingLungAnnualIncomeReport(lines)) {
         parsed.issues.push({
           id: `cmb-wing-lung-${file.name}-unsupported`,
           severity: "blocking",
           title: "招商永隆文件格式不符合要求",
-          detail: "当前仅支持招商永隆银行 Annual Income Report / 全年收入报告 PDF，或证券账户月结单 PDF。",
+          detail: "当前仅支持招商永隆银行 Annual Income Report / 全年收入报告 PDF、证券账户月结单 PDF，或理财账户综合月结单 PDF。",
           source: file.name,
         });
         continue;
