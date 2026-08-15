@@ -1089,7 +1089,7 @@ export function emptyParsedInput(): ParsedInput {
 }
 
 export function mergeParsedInputs(inputs: ParsedInput[]): ParsedInput {
-  return inputs.reduce<ParsedInput>(
+  const reduced = inputs.reduce<ParsedInput>(
     (merged, current) => ({
       realizedTrades: [...merged.realizedTrades, ...current.realizedTrades],
       tradeActivities: [...merged.tradeActivities, ...current.tradeActivities],
@@ -1101,6 +1101,80 @@ export function mergeParsedInputs(inputs: ParsedInput[]): ParsedInput {
     }),
     emptyParsedInput(),
   );
+
+  // 跨月去重：同一笔交易/派息/持仓出现在多份月结单时只保留首次出现的记录
+  return dedupeParsedInput(reduced);
+}
+
+function dedupeParsedInput(input: ParsedInput): ParsedInput {
+  return {
+    ...input,
+    tradeActivities: dedupeBy(input.tradeActivities, tradeKey),
+    dividends: dedupeBy(input.dividends, dividendKey),
+    openPositions: dedupeOpenPositions(input.openPositions),
+    costBasisRequests: dedupeBy(input.costBasisRequests, costBasisRequestKey),
+  };
+}
+
+function tradeKey(t: TradeActivity) {
+  return [
+    t.broker,
+    t.date,
+    t.side,
+    t.currency,
+    t.symbol,
+    t.quantity.toFixed(6),
+    (t.unitPrice ?? 0).toFixed(6),
+  ].join("|");
+}
+
+function dividendKey(d: DividendIncome) {
+  return [
+    d.broker,
+    d.date,
+    d.currency,
+    d.symbol,
+    d.grossAmount.toFixed(4),
+  ].join("|");
+}
+
+function costBasisRequestKey(r: CostBasisRequest) {
+  return [
+    r.broker,
+    r.sellDate,
+    r.currency,
+    r.symbol,
+    r.quantity.toFixed(6),
+  ].join("|");
+}
+
+function openPositionKey(p: OpenPosition) {
+  return [p.broker, p.asOf, p.currency, p.symbol].join("|");
+}
+
+function dedupeBy<T>(arr: T[], keyFn: (t: T) => string): T[] {
+  const seen = new Set<string>();
+  const result: T[] = [];
+  for (const item of arr) {
+    const key = keyFn(item);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(item);
+  }
+  return result;
+}
+
+function dedupeOpenPositions(positions: OpenPosition[]): OpenPosition[] {
+  // 同 broker + 币种 + symbol 的多条持仓，保留 asOf 最晚的一份
+  const byKey = new Map<string, OpenPosition>();
+  for (const p of positions) {
+    const key = [p.broker, p.currency, p.symbol].join("|");
+    const existing = byKey.get(key);
+    if (!existing || (p.asOf ?? "").localeCompare(existing.asOf ?? "") > 0) {
+      byKey.set(key, p);
+    }
+  }
+  return Array.from(byKey.values());
 }
 
 export function realizedTradeId(trade: Omit<RealizedTrade, "id">) {

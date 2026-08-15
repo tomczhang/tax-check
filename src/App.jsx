@@ -1351,6 +1351,9 @@ function brokerLabel(broker) {
   if (broker === "longbridge") return "长桥";
   if (broker === "panda") return "熊猫";
   if (broker === "boci") return "中银国际";
+  if (broker === "bochk") return "中银香港";
+  if (broker === "za") return "ZA Bank";
+  if (broker === "hsbc") return "汇丰香港";
   if (broker === "cmbWingLung") return "招商永隆";
   if (broker === "chief") return "致富";
   if (broker === "fangde") return "方德";
@@ -1367,6 +1370,9 @@ const BROKER_OPTIONS = [
   { value: "longbridge", label: "长桥" },
   { value: "panda", label: "熊猫" },
   { value: "boci", label: "中银国际" },
+  { value: "bochk", label: "中银香港" },
+  { value: "za", label: "ZA Bank" },
+  { value: "hsbc", label: "汇丰香港" },
   { value: "cmbWingLung", label: "招商永隆" },
   { value: "chief", label: "致富" },
   { value: "fangde", label: "方德" },
@@ -1432,7 +1438,10 @@ const LONGBRIDGE_STOCK_LEDGER_HEADERS = ["编号", "业务时间", "账户类型
 const TIGER_TEXT_MARKERS = ["Tiger Brokers", "Tiger Brokers (NZ)", "活动报表", "Tax Form Record", "Key Tax Figures"];
 const PANDA_TEXT_MARKERS = ["熊猫证券", "熊貓證券", "Panda Securities", "fafa.hk", "cs@fafa.hk", "BNC380"];
 const BOCI_TEXT_MARKERS = ["中银国际证券", "中銀國際證券", "BOCI Securities Limited", "bocionline.com", "AAC298"];
-const CMB_WING_LUNG_TEXT_MARKERS = ["招商永隆", "招商永隆銀行", "招商永隆银行", "CMB Wing Lung", "Annual Income Report", "全年收入報告", "全年收入报告"];
+const BOCHK_TEXT_MARKERS = ["中银香港", "中銀香港", "bochk.com", "智盈理財", "智盈理财", "綜合月結單", "综合月结单"];
+const ZA_TEXT_MARKERS = ["ZA Bank", "ZA Bank Limited", "众安銀行", "众安银行", "bank.za.group", "Investment Fund Contract Note", "基金成交单"];
+const HSBC_TEXT_MARKERS = ["HSBC", "Hongkong and Shanghai Banking Corporation", "1 Queen's Road Central", "TSUEN WAN BRANCH"];
+const CMB_WING_LUNG_TEXT_MARKERS = ["招商永隆", "招商永隆銀行", "招商永隆银行", "CMB Wing Lung", "CMB WING LUNG BANK", "理財帳戶", "理財账户", "Annual Income Report", "全年收入報告", "全年收入报告"];
 const CHIEF_TEXT_MARKERS = ["致富证券", "致富證券", "Chief Securities", "chiefgroup.com.hk", "BWN872"];
 const FANGDE_TEXT_MARKERS = ["方德证券", "方德證券", "Forthright Securities", "forthright-sec.com", "BGP713", "B02032"];
 const ZIRCON_TEXT_MARKERS = ["卓锐", "卓銳", "Zircon Securities"];
@@ -1651,6 +1660,27 @@ function baseBrokerGuess(fileName) {
       reason: "文件名包含中银国际/BOCI 特征，已默认选择中银国际。",
     };
   }
+  if (fileName.includes("ZA Bank") || fileName.includes("Investment Fund Contract Note") || lower.includes("za bank") || lower.includes("contract note")) {
+    return {
+      broker: "za",
+      confidence: "high",
+      reason: "文件名包含 ZA Bank / Investment Fund Contract Note 特征，已默认选择 ZA Bank。",
+    };
+  }
+  if (fileName.includes("汇丰") || fileName.includes("HSBC") || lower.includes("hsbc")) {
+    return {
+      broker: "hsbc",
+      confidence: "high",
+      reason: "文件名包含汇丰香港/HSBC 特征，已默认选择汇丰香港。",
+    };
+  }
+  if (fileName.includes("中银香港") || fileName.includes("中銀香港") || lower.includes("bochk")) {
+    return {
+      broker: "bochk",
+      confidence: "high",
+      reason: "文件名包含中银香港/BOCHK 特征，已默认选择中银香港。",
+    };
+  }
   if (fileName.includes("招商永隆") || lower.includes("cmb") || lower.includes("wing lung")) {
     return {
       broker: "cmbWingLung",
@@ -1711,7 +1741,7 @@ function baseBrokerGuess(fileName) {
     return {
       broker: "longbridge",
       confidence: "medium",
-      reason: "PDF 文件会默认按长桥月结单处理；如为华泰、熊猫、中银国际、招商永隆、致富、方德、卓锐、盈立、尊嘉、老虎或 IBKR 报表，请确认券商选择。",
+      reason: "PDF 文件会默认按长桥月结单处理；如为华泰、熊猫、中银国际、中银香港、汇丰香港、ZA Bank、招商永隆、致富、方德、卓锐、盈立、尊嘉、老虎或 IBKR 报表，请确认券商选择。",
     };
   }
   if (isExcelFile(fileName)) {
@@ -1853,11 +1883,25 @@ async function detectBrokerFromFile(file, password) {
           reason: "文件内容包含中银国际/BOCI 特征；当前中银国际解析器支持 PDF 账户月结单。",
         };
       }
+      if (hasAnyMarker(preview, ZA_TEXT_MARKERS)) {
+        return {
+          broker: "za",
+          confidence: "medium",
+          reason: "文件内容包含 ZA Bank / Investment Fund Contract Note 特征；当前 ZA Bank 解析器支持 PDF 基金成交单。",
+        };
+      }
       if (hasAnyMarker(preview, CMB_WING_LUNG_TEXT_MARKERS)) {
         return {
           broker: "cmbWingLung",
           confidence: "medium",
           reason: "文件内容包含招商永隆特征；当前招商永隆解析器支持 PDF 全年收入报告和证券账户月结单。",
+        };
+      }
+      if (hasAnyMarker(preview, BOCHK_TEXT_MARKERS)) {
+        return {
+          broker: "bochk",
+          confidence: "medium",
+          reason: "文件内容包含中银香港/BOCHK 智盈理财综合月结单特征；当前中银香港解析器支持 PDF 综合月结单。",
         };
       }
       if (hasAnyMarker(preview, CHIEF_TEXT_MARKERS)) {
@@ -1948,11 +1992,32 @@ async function detectBrokerFromFile(file, password) {
           reason: "PDF 内容包含中银国际证券/BOCI 账户月结单特征，已默认选择中银国际。",
         };
       }
+      if (hasAnyMarker(preview, ZA_TEXT_MARKERS)) {
+        return {
+          broker: "za",
+          confidence: "high",
+          reason: "PDF 内容包含 ZA Bank 基金成交单特征，已默认选择 ZA Bank。",
+        };
+      }
+      if (hasAnyMarker(preview, HSBC_TEXT_MARKERS)) {
+        return {
+          broker: "hsbc",
+          confidence: "high",
+          reason: "PDF 内容包含汇丰香港 HSBC 基金月结单特征，已默认选择汇丰香港。",
+        };
+      }
       if (hasAnyMarker(preview, CMB_WING_LUNG_TEXT_MARKERS)) {
         return {
           broker: "cmbWingLung",
           confidence: "high",
           reason: "PDF 内容包含招商永隆特征，已默认选择招商永隆。",
+        };
+      }
+      if (hasAnyMarker(preview, BOCHK_TEXT_MARKERS)) {
+        return {
+          broker: "bochk",
+          confidence: "high",
+          reason: "PDF 内容包含中银香港 BOCHK 智盈理财综合月结单特征，已默认选择中银香港。",
         };
       }
       if (hasCmbWingLungMonthlyMarkers(preview)) {
@@ -2509,7 +2574,7 @@ function Sidebar({
               <Upload />
             </span>
             <p>{isFileDragActive ? "松开即可上传券商文件" : "拖入或点击上传券商文件"}</p>
-            <span>支持富途 Excel / 华盛 Excel、PDF / 华泰 PDF / 长桥 PDF / 熊猫 PDF / 中银国际 PDF / 招商永隆 PDF / 方德 PDF / 卓锐 PDF / 盈立 PDF / 尊嘉 PDF / 老虎 PDF / IBKR PDF · .xlsx .xls .pdf</span>
+            <span>支持富途 Excel / 华盛 Excel、PDF / 华泰 PDF / 长桥 PDF / 熊猫 PDF / 中银国际 PDF / 中银香港 PDF / ZA Bank PDF / 招商永隆 PDF / 方德 PDF / 卓锐 PDF / 盈立 PDF / 尊嘉 PDF / 老虎 PDF / IBKR PDF · .xlsx .xls .pdf</span>
           </button>
           <ul className="filelist">
             {fileGroups.map((group) => {
@@ -4817,7 +4882,7 @@ const TOUR_STEPS = [
   {
     target: "upload-card",
     title: "上传券商材料",
-    body: "从这里导入富途 Excel 年度报表、华盛证券交易记录表/公司行动记录表 Excel 或华盛资本证券 PDF 月结单、华泰/长桥/熊猫/中银国际/方德/卓锐/盈立/尊嘉 PDF 月结单、招商永隆 PDF 全年收入报告或证券账户月结单、老虎 PDF 报表、IBKR PDF 活动账单或 1042-S 税表。上传后系统会尝试判断券商和文件类型。",
+    body: "从这里导入富途 Excel 年度报表、华盛证券交易记录表/公司行动记录表 Excel 或华盛资本证券 PDF 月结单、华泰/长桥/熊猫/中银国际/中银香港/方德/卓锐/盈立/尊嘉 PDF 月结单、ZA Bank PDF 基金成交单、招商永隆 PDF 全年收入报告或证券账户月结单、老虎 PDF 报表、IBKR PDF 活动账单或 1042-S 税表。上传后系统会尝试判断券商和文件类型。",
     images: [
       {
         src: `${ASSET_BASE}tour/futu-annual-report.jpg`,
@@ -4900,7 +4965,7 @@ function ProjectIntroModal({ onStart, onClose }) {
         <TaxCheckMark className="intro-brand-mark" />
         <h2 id="intro-title">TaxCheck 是什么</h2>
         <p>
-          TaxCheck是快速为中国大陆居民打造的免费海外资本利得税计算工具，支持富途、华盛、华泰、长桥、熊猫、中银国际、招商永隆、方德、卓锐、盈立、尊嘉、老虎、IBKR等券商。
+          TaxCheck是快速为中国大陆居民打造的免费海外资本利得税计算工具，支持富途、华盛、华泰、长桥、熊猫、中银国际、中银香港、ZA Bank、招商永隆、方德、卓锐、盈立、尊嘉、老虎、IBKR等券商。
           <br />
           <br />
           <b>本工具承诺不保存任何你的财务数据，上传的文件仅在你本地解析使用。</b>
@@ -4914,6 +4979,8 @@ function ProjectIntroModal({ onStart, onClose }) {
           <span>长桥 PDF 月结单</span>
           <span>熊猫 PDF 月结单</span>
           <span>中银国际 PDF 账户月结单</span>
+          <span>中银香港 BOCHK PDF 综合月结单</span>
+          <span>ZA Bank PDF 基金成交单</span>
           <span>招商永隆 PDF 全年收入报告/月结单</span>
           <span>方德 PDF 综合成交单据及账户月结单</span>
           <span>卓锐 PDF 月结单</span>
