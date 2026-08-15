@@ -468,11 +468,12 @@ export async function parseHsbcPdfs(
       const raw = parseHsbcLines(file.name, lines, 0);
 
       if (!raw.statementDetected) {
+        // 不是投资服务月结单（如 HSBC One 账户结单），按 warning 忽略，让其它解析器/上层处理
         parsed.issues.push({
-          id: `hsbc-${file.name}-unsupported`,
-          severity: "blocking",
-          title: "汇丰香港文件格式不符合要求",
-          detail: "当前没有识别到汇丰香港 HSBC 基金月结单特征，请确认券商选择和 PDF 文件。",
+          id: `hsbc-${file.name}-not-investment-services`,
+          severity: "info",
+          title: "汇丰香港 PDF 非投资服务月结单",
+          detail: "未识别到 Portfolio details / Transaction summary 章节，可能为 HSBC One 账户结单或其它类型月结单，将不会提取基金交易和持仓。",
           source: file.name,
         });
         continue;
