@@ -1353,6 +1353,7 @@ function brokerLabel(broker) {
   if (broker === "boci") return "中银国际";
   if (broker === "bochk") return "中银香港";
   if (broker === "za") return "ZA Bank";
+  if (broker === "hsbc") return "汇丰香港";
   if (broker === "cmbWingLung") return "招商永隆";
   if (broker === "chief") return "致富";
   if (broker === "fangde") return "方德";
@@ -1371,6 +1372,7 @@ const BROKER_OPTIONS = [
   { value: "boci", label: "中银国际" },
   { value: "bochk", label: "中银香港" },
   { value: "za", label: "ZA Bank" },
+  { value: "hsbc", label: "汇丰香港" },
   { value: "cmbWingLung", label: "招商永隆" },
   { value: "chief", label: "致富" },
   { value: "fangde", label: "方德" },
@@ -1438,7 +1440,8 @@ const PANDA_TEXT_MARKERS = ["熊猫证券", "熊貓證券", "Panda Securities", 
 const BOCI_TEXT_MARKERS = ["中银国际证券", "中銀國際證券", "BOCI Securities Limited", "bocionline.com", "AAC298"];
 const BOCHK_TEXT_MARKERS = ["中银香港", "中銀香港", "bochk.com", "智盈理財", "智盈理财", "綜合月結單", "综合月结单"];
 const ZA_TEXT_MARKERS = ["ZA Bank", "ZA Bank Limited", "众安銀行", "众安银行", "bank.za.group", "Investment Fund Contract Note", "基金成交单"];
-const CMB_WING_LUNG_TEXT_MARKERS = ["招商永隆", "招商永隆銀行", "招商永隆银行", "CMB Wing Lung", "Annual Income Report", "全年收入報告", "全年收入报告"];
+const HSBC_TEXT_MARKERS = ["HSBC", "Hongkong and Shanghai Banking Corporation", "1 Queen's Road Central", "TSUEN WAN BRANCH"];
+const CMB_WING_LUNG_TEXT_MARKERS = ["招商永隆", "招商永隆銀行", "招商永隆银行", "CMB Wing Lung", "CMB WING LUNG BANK", "理財帳戶", "理財账户", "Annual Income Report", "全年收入報告", "全年收入报告"];
 const CHIEF_TEXT_MARKERS = ["致富证券", "致富證券", "Chief Securities", "chiefgroup.com.hk", "BWN872"];
 const FANGDE_TEXT_MARKERS = ["方德证券", "方德證券", "Forthright Securities", "forthright-sec.com", "BGP713", "B02032"];
 const ZIRCON_TEXT_MARKERS = ["卓锐", "卓銳", "Zircon Securities"];
@@ -1664,6 +1667,13 @@ function baseBrokerGuess(fileName) {
       reason: "文件名包含 ZA Bank / Investment Fund Contract Note 特征，已默认选择 ZA Bank。",
     };
   }
+  if (fileName.includes("汇丰") || fileName.includes("HSBC") || lower.includes("hsbc")) {
+    return {
+      broker: "hsbc",
+      confidence: "high",
+      reason: "文件名包含汇丰香港/HSBC 特征，已默认选择汇丰香港。",
+    };
+  }
   if (fileName.includes("中银香港") || fileName.includes("中銀香港") || lower.includes("bochk")) {
     return {
       broker: "bochk",
@@ -1731,7 +1741,7 @@ function baseBrokerGuess(fileName) {
     return {
       broker: "longbridge",
       confidence: "medium",
-      reason: "PDF 文件会默认按长桥月结单处理；如为华泰、熊猫、中银国际、中银香港、ZA Bank、招商永隆、致富、方德、卓锐、盈立、尊嘉、老虎或 IBKR 报表，请确认券商选择。",
+      reason: "PDF 文件会默认按长桥月结单处理；如为华泰、熊猫、中银国际、中银香港、汇丰香港、ZA Bank、招商永隆、致富、方德、卓锐、盈立、尊嘉、老虎或 IBKR 报表，请确认券商选择。",
     };
   }
   if (isExcelFile(fileName)) {
@@ -1880,18 +1890,18 @@ async function detectBrokerFromFile(file, password) {
           reason: "文件内容包含 ZA Bank / Investment Fund Contract Note 特征；当前 ZA Bank 解析器支持 PDF 基金成交单。",
         };
       }
-      if (hasAnyMarker(preview, BOCHK_TEXT_MARKERS)) {
-        return {
-          broker: "bochk",
-          confidence: "medium",
-          reason: "文件内容包含中银香港/BOCHK 智盈理财综合月结单特征；当前中银香港解析器支持 PDF 综合月结单。",
-        };
-      }
       if (hasAnyMarker(preview, CMB_WING_LUNG_TEXT_MARKERS)) {
         return {
           broker: "cmbWingLung",
           confidence: "medium",
           reason: "文件内容包含招商永隆特征；当前招商永隆解析器支持 PDF 全年收入报告和证券账户月结单。",
+        };
+      }
+      if (hasAnyMarker(preview, BOCHK_TEXT_MARKERS)) {
+        return {
+          broker: "bochk",
+          confidence: "medium",
+          reason: "文件内容包含中银香港/BOCHK 智盈理财综合月结单特征；当前中银香港解析器支持 PDF 综合月结单。",
         };
       }
       if (hasAnyMarker(preview, CHIEF_TEXT_MARKERS)) {
@@ -1989,11 +1999,11 @@ async function detectBrokerFromFile(file, password) {
           reason: "PDF 内容包含 ZA Bank 基金成交单特征，已默认选择 ZA Bank。",
         };
       }
-      if (hasAnyMarker(preview, BOCHK_TEXT_MARKERS)) {
+      if (hasAnyMarker(preview, HSBC_TEXT_MARKERS)) {
         return {
-          broker: "bochk",
+          broker: "hsbc",
           confidence: "high",
-          reason: "PDF 内容包含中银香港 BOCHK 智盈理财综合月结单特征，已默认选择中银香港。",
+          reason: "PDF 内容包含汇丰香港 HSBC 基金月结单特征，已默认选择汇丰香港。",
         };
       }
       if (hasAnyMarker(preview, CMB_WING_LUNG_TEXT_MARKERS)) {
@@ -2001,6 +2011,13 @@ async function detectBrokerFromFile(file, password) {
           broker: "cmbWingLung",
           confidence: "high",
           reason: "PDF 内容包含招商永隆特征，已默认选择招商永隆。",
+        };
+      }
+      if (hasAnyMarker(preview, BOCHK_TEXT_MARKERS)) {
+        return {
+          broker: "bochk",
+          confidence: "high",
+          reason: "PDF 内容包含中银香港 BOCHK 智盈理财综合月结单特征，已默认选择中银香港。",
         };
       }
       if (hasCmbWingLungMonthlyMarkers(preview)) {

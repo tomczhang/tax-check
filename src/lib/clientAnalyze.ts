@@ -7,6 +7,7 @@ import { taxConfigForYear } from "@/lib/tax/config";
 import { parseBochkPdfs } from "@/lib/parsers/bochk";
 import { parseBociPdfs } from "@/lib/parsers/boci";
 import { parseChiefPdfs } from "@/lib/parsers/chief";
+import { parseHsbcPdfs } from "@/lib/parsers/hsbc";
 import { parseZaPdfs } from "@/lib/parsers/za";
 import { parseCmbWingLungPdfs } from "@/lib/parsers/cmbWingLung";
 import { parseFangdePdfs } from "@/lib/parsers/fangde";
@@ -30,6 +31,7 @@ export type BrokerId =
   | "boci"
   | "bochk"
   | "za"
+  | "hsbc"
   | "cmbWingLung"
   | "chief"
   | "fangde"
@@ -160,6 +162,7 @@ export async function analyzeUploadedFiles(options: {
   const bociFiles: Array<{ name: string; data: ArrayBuffer }> = [];
   const bochkFiles: Array<{ name: string; data: ArrayBuffer }> = [];
   const zaFiles: Array<{ name: string; data: ArrayBuffer }> = [];
+  const hsbcFiles: Array<{ name: string; data: ArrayBuffer }> = [];
   const cmbWingLungFiles: Array<{ name: string; data: ArrayBuffer }> = [];
   const chiefFiles: Array<{ name: string; data: ArrayBuffer }> = [];
   const fangdeFiles: Array<{ name: string; data: ArrayBuffer }> = [];
@@ -213,6 +216,11 @@ export async function analyzeUploadedFiles(options: {
         throw new ParserValidationError(`${file.name} 被标记为 ZA Bank，但 ZA Bank 解析器只接受 PDF 基金成交单。`, file.name);
       }
       zaFiles.push({ name: file.name, data: await file.arrayBuffer() });
+    } else if (entry.broker === "hsbc") {
+      if (!lower.endsWith(".pdf")) {
+        throw new ParserValidationError(`${file.name} 被标记为汇丰香港，但汇丰香港解析器只接受 PDF 基金月结单。`, file.name);
+      }
+      hsbcFiles.push({ name: file.name, data: await file.arrayBuffer() });
     } else if (entry.broker === "cmbWingLung") {
       if (!lower.endsWith(".pdf")) {
         throw new ParserValidationError(`${file.name} 被标记为招商永隆，但招商永隆解析器只接受 PDF 全年收入报告或证券账户月结单。`, file.name);
@@ -339,6 +347,16 @@ export async function analyzeUploadedFiles(options: {
     const parsed = await parseZaPdfs(zaFiles, {
       targetYear: options.taxYear,
       manualCosts: options.manualCosts ?? [],
+    });
+    const blocking = parsed.issues.find((issue) => issue.severity === "blocking");
+    if (blocking) {
+      throw new ParserValidationError(`${blocking.title}：${blocking.detail}`, blocking.source);
+    }
+    inputs.push(parsed);
+  }
+  if (hsbcFiles.length > 0) {
+    const parsed = await parseHsbcPdfs(hsbcFiles, {
+      targetYear: options.taxYear,
     });
     const blocking = parsed.issues.find((issue) => issue.severity === "blocking");
     if (blocking) {
