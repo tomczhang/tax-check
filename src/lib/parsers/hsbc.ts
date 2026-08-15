@@ -186,12 +186,9 @@ function tokensInRange(line: TextLine, minX: number, maxX: number) {
 }
 
 function isHsbcStatement(lines: TextLine[]) {
-  const text = lines.slice(0, 30).map((l) => l.text).join("\n");
-  const lower = text.toLowerCase();
-  return lower.includes("queen's road central") ||
-    lower.includes("hsbc") ||
-    /195-\d{3}-\d{3}/.test(text) ||
-    /\bTSUEN WAN BRANCH\b/.test(text);
+  // Investment services 月结单独有：Portfolio details + Transaction summary
+  const text = lines.slice(0, 100).map((l) => l.text).join("\n");
+  return /Portfolio\s*details/i.test(text) && /Transaction\s*summary/i.test(text);
 }
 
 function parseHsbcLines(sourcePdf: string, lines: TextLine[], baseSequence: number): HsbcRawData {
@@ -462,22 +459,33 @@ export async function parseHsbcPdfs(
 ): Promise<ParsedInput> {
   const parsed = emptyParsedInput();
 
+  let investmentServicesFiles: string[] = [];
+  let totalTrades = 0;
+  let totalHoldings = 0;
+  let buysAcrossFiles = 0;
+  let sellsAcrossFiles = 0;
+  let firstAccount = "";
+  let firstAccountName = "";
+  let firstStatementDate = "";
+
   for (const file of files) {
     try {
       const lines = await extractPdfLines(file.name, file.data);
       const raw = parseHsbcLines(file.name, lines, 0);
 
       if (!raw.statementDetected) {
-        // 不是投资服务月结单（如 HSBC One 账户结单），按 warning 忽略，让其它解析器/上层处理
-        parsed.issues.push({
-          id: `hsbc-${file.name}-not-investment-services`,
-          severity: "info",
-          title: "汇丰香港 PDF 非投资服务月结单",
-          detail: "未识别到 Portfolio details / Transaction summary 章节，可能为 HSBC One 账户结单或其它类型月结单，将不会提取基金交易和持仓。",
-          source: file.name,
-        });
+        // 不是投资服务月结单（如 HSBC One 账户结单），静默忽略让 ONE 解析器处理
         continue;
       }
+
+      investmentServicesFiles.push(file.name);
+      totalTrades += raw.trades.length;
+      totalHoldings += raw.holdings.length;
+      buysAcrossFiles += raw.trades.filter((t) => t.side === "buy").length;
+      sellsAcrossFiles += raw.trades.filter((t) => t.side === "sell").length;
+      if (!firstAccount) firstAccount = raw.accountNo;
+      if (!firstAccountName) firstAccountName = raw.accountName;
+      if (!firstStatementDate) firstStatementDate = raw.statementDate;
 
       for (const trade of raw.trades) {
         parsed.tradeActivities.push(activityFromTrade(trade));
@@ -499,18 +507,6 @@ export async function parseHsbcPdfs(
         }
       }
 
-      if (raw.trades.length > 0 || raw.holdings.length > 0) {
-        parsed.issues.push(aggregateIssue(raw));
-      } else {
-        parsed.issues.push({
-          id: `hsbc-${file.name}-empty`,
-          severity: "info",
-          title: "本月没有汇丰香港基金交易",
-          detail: "已识别为汇丰香港基金月结单，但没有读取到基金买入/卖出记录。",
-          source: file.name,
-        });
-      }
-
       parsed.issues.push(...raw.issues);
     } catch (error) {
       parsed.issues.push({
@@ -521,6 +517,17 @@ export async function parseHsbcPdfs(
         source: file.name,
       });
     }
+  }
+
+  // 一次性汇总消息：避免每份月结单单独发"本月没有交易"之类的提示
+  if (investmentServicesFiles.length > 0 && (totalTrades > 0 || totalHoldings > 0)) {
+    parsed.issues.push({
+      id: `hsbc-investment-services-summary-${investmentServicesFiles.length}-files`,
+      severity: "info",
+      title: "已解析汇丰香港投资服务基金月结单",
+      detail: `已读取 ${investmentServicesFiles.length} 份月结单（户口 ${firstAccount}，户名 ${firstAccountName}）：基金买入 ${buysAcrossFiles} 笔，卖出 ${sellsAcrossFiles} 笔，月末基金持仓 ${totalHoldings} 条。`,
+      source: investmentServicesFiles[0],
+    });
   }
 
   return parsed;

@@ -297,6 +297,8 @@ function aggregateIssue(raw: HsbcOneRawData): ReviewIssue {
 
 export async function parseHsbcOnePdfs(files: HsbcOneFileInput[]): Promise<ParsedInput> {
   const parsed = emptyParsedInput();
+  const allInterests: HsbcOneInterest[] = [];
+  const allRaws: HsbcOneRawData[] = [];
 
   for (const file of files) {
     try {
@@ -308,12 +310,10 @@ export async function parseHsbcOnePdfs(files: HsbcOneFileInput[]): Promise<Parse
         continue;
       }
 
+      allRaws.push(raw);
       for (const interest of raw.interests) {
         parsed.dividends.push(interestFromRecord(interest));
-      }
-
-      if (raw.interests.length > 0) {
-        parsed.issues.push(aggregateIssue(raw));
+        allInterests.push(interest);
       }
 
       parsed.issues.push(...raw.issues);
@@ -326,6 +326,18 @@ export async function parseHsbcOnePdfs(files: HsbcOneFileInput[]): Promise<Parse
         source: file.name,
       });
     }
+  }
+
+  // 一次性发出汇总消息：只触发一次，无论有几份月结单
+  if (allInterests.length > 0) {
+    const sources = Array.from(new Set(allInterests.map((i) => i.sourcePdf)));
+    parsed.issues.push({
+      id: `hsbc-one-summary-${sources.length}-files`,
+      severity: "info",
+      title: "已解析汇丰 One 账户存款利息",
+      detail: `从 ${sources.length} 份 HSBC One 月结单读取存款利息 ${allInterests.length} 笔。`,
+      source: sources[0],
+    });
   }
 
   return parsed;
