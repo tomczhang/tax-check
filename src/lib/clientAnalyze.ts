@@ -8,6 +8,7 @@ import { parseBochkPdfs } from "@/lib/parsers/bochk";
 import { parseBociPdfs } from "@/lib/parsers/boci";
 import { parseChiefPdfs } from "@/lib/parsers/chief";
 import { parseHsbcPdfs } from "@/lib/parsers/hsbc";
+import { parseHsbcOnePdfs } from "@/lib/parsers/hsbcOne";
 import { parseZaPdfs } from "@/lib/parsers/za";
 import { parseCmbWingLungPdfs } from "@/lib/parsers/cmbWingLung";
 import { parseFangdePdfs } from "@/lib/parsers/fangde";
@@ -363,6 +364,12 @@ export async function analyzeUploadedFiles(options: {
       throw new ParserValidationError(`${blocking.title}：${blocking.detail}`, blocking.source);
     }
     inputs.push(parsed);
+
+    // 汇丰 One 账户月结单：提取存款利息
+    const oneParsed = await parseHsbcOnePdfs(hsbcFiles);
+    if (oneParsed.dividends.length > 0 || oneParsed.issues.some((i) => i.severity !== "warning")) {
+      inputs.push(oneParsed);
+    }
   }
   if (cmbWingLungFiles.length > 0) {
     const parsed = await parseCmbWingLungPdfs(cmbWingLungFiles, {
