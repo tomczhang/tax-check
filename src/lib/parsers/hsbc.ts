@@ -251,7 +251,7 @@ function parseHsbcLines(sourcePdf: string, lines: TextLine[], baseSequence: numb
     // Skip column headers
     if (/Risk Level|The opening balance|The closing balance|Market unit price|Market value/i.test(text)) continue;
     if (/Securities description|Transaction date|Settlement date|Unit price|Quantity|Settlement amount/i.test(text)) continue;
-    if (/Securities ID|Reference|Type/i.test(text)) continue;
+    if (/^Securities ID$/i.test(text.trim())) continue;
 
     if (inHoldings) {
       // Fund ID row: U50004 at x~60, name at x~84
@@ -269,7 +269,7 @@ function parseHsbcLines(sourcePdf: string, lines: TextLine[], baseSequence: numb
           if (/^Risk/i.test(tok.text)) break;
           nameTokens.push(tok.text);
         }
-        currentFundName = clean(nameTokens.join(" "));
+        currentFundName = clean(nameTokens.join(" ")).replace(/\s*\(UNT\)\s*$/i, "");
         continue;
       }
 
@@ -331,7 +331,7 @@ function parseHsbcLines(sourcePdf: string, lines: TextLine[], baseSequence: numb
           if (isNumberToken(tok.text)) break;
           nameTokens.push(tok.text);
         }
-        currentFundName = clean(nameTokens.join(" "));
+        currentFundName = clean(nameTokens.join(" ")).replace(/\s*\(UNT\)\s*$/i, "");
         continue;
       }
 
