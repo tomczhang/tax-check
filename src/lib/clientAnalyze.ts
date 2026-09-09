@@ -17,6 +17,7 @@ import { parsePandaPdfs } from "@/lib/parsers/panda";
 import { parseSchwabPdfs } from "@/lib/parsers/schwab";
 import { parseTigerPdfs } from "@/lib/parsers/tiger";
 import { parseUsmartPdfs } from "@/lib/parsers/usmart";
+import { parseXingcaifuPdfs } from "@/lib/parsers/xingcaifu";
 import { parseZirconPdfs } from "@/lib/parsers/zircon";
 import { parseZunjiaPdfs } from "@/lib/parsers/zunjia";
 import { ParserValidationError } from "@/lib/parsers/common";
@@ -34,6 +35,7 @@ export type BrokerId =
   | "tiger"
   | "zircon"
   | "usmart"
+  | "xingcaifu"
   | "zunjia"
   | "ibkr"
   | "huasheng"
@@ -163,6 +165,7 @@ export async function analyzeUploadedFiles(options: {
   const tigerFiles: Array<{ name: string; data: ArrayBuffer }> = [];
   const zirconFiles: Array<{ name: string; data: ArrayBuffer }> = [];
   const usmartFiles: Array<{ name: string; data: ArrayBuffer }> = [];
+  const xingcaifuFiles: Array<{ name: string; data: ArrayBuffer }> = [];
   const zunjiaFiles: Array<{ name: string; data: ArrayBuffer }> = [];
   const ibkrFiles: Array<{ name: string; data: ArrayBuffer }> = [];
 
@@ -233,6 +236,11 @@ export async function analyzeUploadedFiles(options: {
         );
       }
       ibkrFiles.push({ name: file.name, data: await file.arrayBuffer() });
+    } else if (entry.broker === "xingcaifu") {
+      if (!lower.endsWith(".pdf")) {
+        throw new ParserValidationError(`${file.name} 被标记为星财富，但星财富解析器只接受 PDF 月结单。`, file.name);
+      }
+      xingcaifuFiles.push({ name: file.name, data: await file.arrayBuffer() });
     } else if (entry.broker === "zircon") {
       if (!lower.endsWith(".pdf")) {
         throw new ParserValidationError(`${file.name} 被标记为卓锐，但卓锐解析器只接受 PDF 月结单。`, file.name);
@@ -406,6 +414,17 @@ export async function analyzeUploadedFiles(options: {
   }
   if (usmartFiles.length > 0) {
     const parsed = await parseUsmartPdfs(usmartFiles, options.password, {
+      targetYear: options.taxYear,
+      manualCosts: options.manualCosts ?? [],
+    });
+    const blocking = parsed.issues.find((issue) => issue.severity === "blocking");
+    if (blocking) {
+      throw new ParserValidationError(`${blocking.title}：${blocking.detail}`, blocking.source);
+    }
+    inputs.push(parsed);
+  }
+  if (xingcaifuFiles.length > 0) {
+    const parsed = await parseXingcaifuPdfs(xingcaifuFiles, options.password, {
       targetYear: options.taxYear,
       manualCosts: options.manualCosts ?? [],
     });
