@@ -1357,6 +1357,7 @@ function brokerLabel(broker) {
   if (broker === "schwab") return "嘉信";
   if (broker === "zircon") return "卓锐";
   if (broker === "usmart") return "盈立";
+  if (broker === "xingcaifu") return "星财富";
   if (broker === "zunjia") return "尊嘉";
   return "富途";
 }
@@ -1374,6 +1375,7 @@ const BROKER_OPTIONS = [
   { value: "schwab", label: "嘉信" },
   { value: "zircon", label: "卓锐" },
   { value: "usmart", label: "盈立" },
+  { value: "xingcaifu", label: "星财富" },
   { value: "zunjia", label: "尊嘉" },
   { value: "tiger", label: "老虎" },
   { value: "ibkr", label: "IBKR" },
@@ -1440,6 +1442,7 @@ const FANGDE_TEXT_MARKERS = ["方德证券", "方德證券", "Forthright Securit
 const SCHWAB_TEXT_MARKERS = ["Charles Schwab", "Schwab One International", "schwab.com/stmt"];
 const ZIRCON_TEXT_MARKERS = ["卓锐", "卓銳", "Zircon Securities"];
 const USMART_TEXT_MARKERS = ["盈立", "盈立證券", "盈立证券", "uSmart Securities", "usmarthk.com", "usmartsecurities.com"];
+const XINGCAIFU_TEXT_MARKERS = ["FOSUN INTERNATIONAL", "复星国际证券", "復星國際證券", "星财富", "星財富", "AAF432"];
 const ZUNJIA_TEXT_MARKERS = ["尊嘉证券", "尊嘉證券", "尊嘉金融", "Zunjia Securities", "3169-0319", "400-031-0319"];
 const IBKR_TEXT_MARKERS = [
   "Interactive Brokers",
@@ -1703,6 +1706,19 @@ function baseBrokerGuess(fileName) {
       broker: "usmart",
       confidence: "high",
       reason: "文件名包含盈立/uSmart 特征，已默认选择盈立。",
+    };
+  }
+  if (
+    fileName.includes("星财富") ||
+    fileName.includes("星財富") ||
+    lower.includes("fosun") ||
+    lower.includes("xingcaifu") ||
+    /^(现金账户|保证金账户|現金賬戶|保證金賬戶)\d{2}年\d{1,2}月/.test(fileName)
+  ) {
+    return {
+      broker: "xingcaifu",
+      confidence: "high",
+      reason: "文件名包含星财富/复星国际证券月结单特征，已默认选择星财富。",
     };
   }
   if (fileName.includes("尊嘉") || lower.includes("zunjia")) {
@@ -2035,6 +2051,13 @@ async function detectBrokerFromFile(file, password) {
           broker: "usmart",
           confidence: "high",
           reason: "PDF 内容包含盈立/uSmart 月结单特征，已默认选择盈立。",
+        };
+      }
+      if (hasAnyMarker(preview, XINGCAIFU_TEXT_MARKERS)) {
+        return {
+          broker: "xingcaifu",
+          confidence: "high",
+          reason: "PDF 内容包含复星国际证券/星财富月结单特征，已默认选择星财富。",
         };
       }
       if (hasAnyMarker(preview, ZUNJIA_TEXT_MARKERS)) {
@@ -2535,7 +2558,7 @@ function Sidebar({
               <Upload />
             </span>
             <p>{isFileDragActive ? "松开即可上传券商文件" : "拖入或点击上传券商文件"}</p>
-            <span>支持富途 Excel / 华盛 Excel、PDF / 华泰 PDF / 长桥 PDF / 熊猫 PDF / 中银国际 PDF / 招商永隆 PDF / 方德 PDF / 嘉信 PDF / 卓锐 PDF / 盈立 PDF / 尊嘉 PDF / 老虎 PDF / IBKR PDF · .xlsx .xls .pdf</span>
+            <span>支持富途 Excel / 华盛 Excel、PDF / 华泰 PDF / 长桥 PDF / 熊猫 PDF / 中银国际 PDF / 招商永隆 PDF / 方德 PDF / 嘉信 PDF / 卓锐 PDF / 盈立 PDF / 星财富 PDF / 尊嘉 PDF / 老虎 PDF / IBKR PDF · .xlsx .xls .pdf</span>
           </button>
           <ul className="filelist">
             {fileGroups.map((group) => {
@@ -4843,7 +4866,7 @@ const TOUR_STEPS = [
   {
     target: "upload-card",
     title: "上传券商材料",
-    body: "从这里导入富途 Excel 年度报表、华盛证券交易记录表/公司行动记录表 Excel 或华盛资本证券 PDF 月结单、华泰/长桥/熊猫/中银国际/方德/嘉信/卓锐/盈立/尊嘉 PDF 月结单、招商永隆 PDF 全年收入报告或证券账户月结单、老虎 PDF 报表、IBKR PDF 活动账单或 1042-S 税表。上传后系统会尝试判断券商和文件类型。",
+    body: "从这里导入富途 Excel 年度报表、华盛证券交易记录表/公司行动记录表 Excel 或华盛资本证券 PDF 月结单、华泰/长桥/熊猫/中银国际/方德/嘉信/卓锐/盈立/星财富/尊嘉 PDF 月结单、招商永隆 PDF 全年收入报告或证券账户月结单、老虎 PDF 报表、IBKR PDF 活动账单或 1042-S 税表。上传后系统会尝试判断券商和文件类型。",
     images: [
       {
         src: `${ASSET_BASE}tour/futu-annual-report.jpg`,
